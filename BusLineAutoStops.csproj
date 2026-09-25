@@ -1,0 +1,80 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<Configurations>Debug;Release</Configurations>
+		<PublishConfigurationPath>Properties\PublishConfiguration.xml</PublishConfigurationPath>
+		<LangVersion>9.0</LangVersion>
+	</PropertyGroup>
+
+	<Import Project="$([System.Environment]::GetEnvironmentVariable('CSII_TOOLPATH', 'EnvironmentVariableTarget.User'))\Mod.props" />
+	<Import Project="$([System.Environment]::GetEnvironmentVariable('CSII_TOOLPATH', 'EnvironmentVariableTarget.User'))\Mod.targets" />
+
+	<ItemGroup>
+		<PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+		<PackageReference Include="Lib.Harmony" Version="2.2.2" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageDownload Include="Lib.Harmony" Version="[2.3.3]" />
+	</ItemGroup>
+
+	<PropertyGroup>
+		<HarmonyRuntimePackageDir>$(NuGetPackageRoot)lib.harmony\2.3.3\</HarmonyRuntimePackageDir>
+		<HarmonyRuntimeDll>$(HarmonyRuntimePackageDir)lib\net48\0Harmony.dll</HarmonyRuntimeDll>
+	</PropertyGroup>
+
+	<Target Name="RunModPostProcessor" AfterTargets="AfterBuild" BeforeTargets="DeployWIP" Condition="'$(NeedBuild)'">
+		<Error Condition="!Exists('$(ModPostProcessorFullPath)')" Text="Post processor not found: $(ModPostProcessorFullPath)" />
+		<Message Text="Run post processor: $(ModPostProcessorArgs)" Importance="high" />
+		<Exec Command="$(ModPostProcessorArgs)" EnvironmentVariables="DOTNET_ROLL_FORWARD=Major" LogStandardErrorAsError="true" />
+		<Error Condition="!Exists('$(HarmonyRuntimeDll)')" Text="Missing 0Harmony 2.3.3 at $(HarmonyRuntimeDll). Run: dotnet restore" />
+		<Copy SourceFiles="$(HarmonyRuntimeDll)" DestinationFolder="$(OutDir)" OverwriteReadOnlyFiles="true" SkipUnchangedFiles="false" />
+		<Message Text="SwapHarmonyRuntime: $(OutDir)0Harmony.dll -> 2.3.3" Importance="high" />
+	</Target>
+
+	<Target Name="RunModPublisher" AfterTargets="Publish">
+		<Error Condition="!Exists('$(ModPublisherPath)')" Text="Mod publisher not found: $(ModPublisherPath)" />
+		<Message Text="Run mod publisher: $(ModPublisherArgs)" Importance="high" />
+		<Exec Command="$(ModPublisherArgs)" EnvironmentVariables="DOTNET_ROLL_FORWARD=Major" LogStandardErrorAsError="true" />
+	</Target>
+
+	<ItemGroup>
+		<Compile Remove="research\**" />
+		<Compile Remove="tests\**" />
+		<Compile Remove="releases\**" />
+		<Compile Remove="tools\**" />
+		<Compile Remove="Frontend\**" />
+		<None Remove="research\**" />
+		<None Remove="tests\**" />
+		<None Remove="releases\**" />
+		<None Remove="Frontend\**" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<Reference Include="Game"><Private>false</Private></Reference>
+		<Reference Include="Colossal.Core"><Private>false</Private></Reference>
+		<Reference Include="Colossal.Mathematics"><Private>false</Private></Reference>
+		<Reference Include="Colossal.Collections"><Private>false</Private></Reference>
+		<Reference Include="Colossal.Logging"><Private>false</Private></Reference>
+		<Reference Include="Colossal.IO.AssetDatabase"><Private>false</Private></Reference>
+		<Reference Include="Colossal.Localization"><Private>false</Private></Reference>
+		<Reference Include="Colossal.UI"><Private>false</Private></Reference>
+		<Reference Include="UnityEngine.CoreModule"><Private>false</Private></Reference>
+		<Reference Include="Unity.InputSystem"><Private>false</Private></Reference>
+		<Reference Include="Unity.Burst"><Private>false</Private></Reference>
+		<Reference Include="Unity.Collections"><Private>false</Private></Reference>
+		<Reference Include="Unity.Entities"><Private>false</Private></Reference>
+		<Reference Include="Unity.Mathematics"><Private>false</Private></Reference>
+	</ItemGroup>
+
+	<ItemGroup>
+		<Reference Update="System"><Private>false</Private></Reference>
+		<Reference Update="System.Core"><Private>false</Private></Reference>
+	</ItemGroup>
+
+	<ItemGroup>
+		<None Include="$(ModPropsFile)" Link="Properties\Mod.props" />
+		<None Include="$(ModTargetsFile)" Link="Properties\Mod.targets" />
+	</ItemGroup>
+
+</Project>

@@ -1,0 +1,22 @@
+{
+  "name": "busline-autostops-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "main": "build/index.js",
+  "scripts": {
+    "build": "webpack",
+    "dev": "webpack --watch"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.0.26",
+    "@types/react-dom": "^18.0.6",
+    "ts-loader": "^9.5.1",
+    "typescript": "^4.8.4",
+    "webpack": "^5.74.0",
+    "webpack-cli": "^4.10.0"
+  }
+}

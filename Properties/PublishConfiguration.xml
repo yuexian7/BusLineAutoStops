@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ModConfiguration xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <ModId Value="160528" />
+  <GameVersion Value="1.6.*" />
+  <ModVersion Value="0.1.1" />
+  <DisplayName Value="BusLine AutoStops" />
+  <ShortDescription Value="Create bus lines and auto-place station assets at each stop. / 创建公交线路时自动放置公交站。" />
+  <LongDescription Value="Lazy mode for bus line creation: when you place a stop, the selected bus stop asset is placed with it (centered on the stop). Right-click delete of a stop also removes the station this mod placed. Toggle with a hotkey or the top-left button. Options include exit cleanup policy. Localized in 12 official languages. Panel text goes through game localization so Bridge the Language Gap can translate it.&#xA;&#xA;懒人模式：创建公交停靠点时自动放置当前选中的公交站资产（站台中心对齐停靠点）；右键删除停靠点时可联动删除本模组放置的站台。可用快捷键或左上角按钮开关。选项含中途退出删除机制。支持 12 种官方语言；面板文案走游戏本地化，可被 Bridge the Language Gap 翻译。&#xA;&#xA;Current scope: bus lines only. Other transit kinds are prepared in the architecture.&#xA;&#xA;当前范围：仅公交线路；其它交通类型架构已预留。" />
+  <ChangeLog Value="- v0.1.1: About section with author links; more reliable bus stop asset detection; UTF-8 UI module metadata fix" />
+  <AccessLevel Value="Private" />
+  <Tag Value="Code Mod" />
+  <Thumbnail Value="Properties/Thumbnail.png" />
+</ModConfiguration>

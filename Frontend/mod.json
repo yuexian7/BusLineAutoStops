@@ -1,0 +1,9 @@
+﻿{
+  "id": "BusLineAutoStops",
+  "displayName": "BusLine AutoStops",
+  "author": "yuexian",
+  "version": "0.1.1",
+  "description": "Create bus lines and auto-place station assets at each stop",
+  "isCodeMod": true,
+  "dependencies": []
+}
