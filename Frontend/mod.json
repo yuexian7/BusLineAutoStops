@@ -1,9 +1,9 @@
-﻿{
+{
   "id": "BusLineAutoStops",
   "displayName": "BusLine AutoStops",
   "author": "yuexian",
-  "version": "0.1.1",
-  "description": "Create bus lines and auto-place station assets at each stop",
+  "version": "0.11.1",
+  "description": "Auto-place bus stops and tram stops with the game's own placement / 用原版放置流程自动落公交站、有轨电车站",
   "isCodeMod": true,
   "dependencies": []
 }

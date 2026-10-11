@@ -4,38 +4,109 @@ using Game;
 using Game.Input;
 using Game.Modding;
 using Game.SceneFlow;
-using HarmonyLib;
+using Game.Tools;
 using Unity.Entities;
 using UnityEngine.InputSystem;
-using BusLineAutoStops.Patches;
 using BusLineAutoStops.Systems;
 
 namespace BusLineAutoStops
 {
     /// <summary>
     /// BusLine AutoStops 入口。
-    /// LoadSettings → 多语言 → RegisterInOptionsUI → RegisterKeyBindings → Harmony → 注册系统。
+    ///
+    /// v0.2.1 关键修正：
+    /// - 顺序：RegisterKeyBindings() 必须在 LoadSettings() 之前。ModSetting.ApplyKeyBindings 是
+    ///   [AfterDecode]，且开头就是 if (keyBindingRegistered)（ModSetting.cs:269-277）；
+    ///   旧顺序导致解码时 keyBindingRegistered 还是 false，玩家存的键（C）从没写进 InputManager
+    ///   → 按快捷键完全没反应（实机日志 0 条 [懒人模式]）。
+    /// - 去掉了 Harmony 补丁：RouteToolSystem.Apply/Cancel 是私有状态机方法，钩它们只能“观察”不能改结果；
+    ///   ObjectToolSystem.SetPrefab 直接抛 “Method has no body”。本版全部走 public 的
+    ///   RouteToolSystem / ToolSystem 面（无补丁，跟 TTE 一致）。
+    /// - 进入懒人模式不再强制“先选中站台资产”：线路类型取自线路工具本身
+    ///   （TransportLineData.m_TransportType），站台资产缺省时自动挑一个可用公交站资产。
     /// </summary>
     public class BusLineAutoStopsMod : IMod
     {
-        public const string kVersion = "0.1.1";
+        public const string kVersion = "0.11.1";
 
         public static ILog log = LogManager.GetLogger("BusLineAutoStops").SetShowsErrorsInUI(false);
 
         public static BusLineAutoStopsMod Instance;
 
         private Setting m_Setting;
-        private Harmony m_Harmony;
 
         public void OnLoad(UpdateSystem updateSystem)
         {
             Instance = this;
-            log.Info("BusLine AutoStops v" + kVersion + " loading (local build, not published)...");
+            log.Info("BusLine AutoStops v" + kVersion + " loading...");
 
             m_Setting = new Setting(this);
             Setting.Instance = m_Setting;
 
-            // 多语言：每份字典各自构建；设置页 + 游戏内面板。
+            // 1) 先建 action（keyBindingRegistered=true）
+            try { m_Setting.RegisterKeyBindings(); }
+            catch (Exception e) { log.Warn("RegisterKeyBindings 失败：" + e.GetType().Name + " " + e.Message); }
+
+            // 2) 再读设置：[AfterDecode] ApplyKeyBindings 这时才会把存过的键位推给 InputManager
+            try
+            {
+                Colossal.IO.AssetDatabase.AssetDatabase.global.LoadSettings(
+                    nameof(BusLineAutoStops), m_Setting, new Setting(this));
+            }
+            catch (Exception e)
+            {
+                log.Warn("读取设置失败，用默认值：" + e.GetType().Name);
+            }
+            m_Setting.SyncToState();
+
+            // 3) 多语言
+            RegisterLocaleSources();
+
+            // 4) 选项页
+            if (World.DefaultGameObjectInjectionWorld != null)
+            {
+                try { m_Setting.RegisterInOptionsUI(); log.Info("选项页已注册"); }
+                catch (Exception e) { log.Warn("选项页注册失败：" + e.GetType().Name + " " + e.Message); }
+            }
+            else
+            {
+                log.Warn("世界未就绪，选项页未注册");
+            }
+
+            RegisterHotkeys();
+            ReportKeyBindings("加载后");
+
+            try
+            {
+                // 注册只能有一次！2026-10-03 闪退取证的直接结论（开发笔记 #63）：
+                // Game/UpdateSystem.cs:271-277（UpdateAt 进 m_Systems）与 :278-291（UpdateAfter/Before
+                // 进 m_RefMap[另一个系统]）是**两张互不相干的表**，Refresh/AddSystemUpdate（:382-455）
+                // 只管把 m_Updates.Add(systemData) 追加进去，**没有"同一个系统只加一次"的去重**。
+                // 所以 UpdateAt + UpdateAfter + UpdateBefore 三行注册 = 一帧里 OnUpdate 跑三遍。
+                // v0.6.1 就是这么把自己打死的：A 槽写 Apply，B/C 槽的"残留 Apply 自我保险"下一秒把它清了，
+                // ToolOutputSystem 永远吃不到（实机 34 次代按 0 次转正、m_staleCleared 一路涨到 60），
+                // 而且反射写 + 原版落地 job 被三倍频率反复触发，最后原生崩溃时空托管栈。
+                //
+                // 现在只留一个槽：排在 ToolOutputSystem 之前。ToolOutputSystem 自己是用 +1000000
+                // 的排序键落在该相位最后（Game.Common/SystemOrder.cs:695），所以"紧挨在它前面"
+                // 自动等价于"所有原版工具都跑完了"——读线路工具的控制点、以及下一版喂 temp 定义，
+                // 都要靠这个唯一合法的缝隙。
+                try { updateSystem.UpdateBefore<LazyModeSystem, ToolOutputSystem>(SystemUpdatePhase.ToolUpdate); }
+                catch (Exception e) { log.Warn("LazyModeSystem 注册失败（ToolOutputSystem 之前）：" + e.GetType().Name); }
+
+                // UiCommandSystem 同理只注册一次（UIUpdate 相位里没有顺序需求，UpdateAt 就够）
+                updateSystem.UpdateAt<UiCommandSystem>(SystemUpdatePhase.UIUpdate);
+                log.Info("系统已注册：LazyMode(ToolUpdate：仅一个槽，紧挨 ToolOutputSystem 之前) / UiCommand(UIUpdate)");
+            }
+            catch (Exception e)
+            {
+                LazyModeState.Broken = true;
+                log.Error("系统注册失败，本模组不介入：" + e.GetType().Name + " " + e.Message);
+            }
+        }
+
+        private void RegisterLocaleSources()
+        {
             try
             {
                 string[] locales = LocaleTable.kLocales;
@@ -60,69 +131,10 @@ namespace BusLineAutoStops
             {
                 log.Warn("注册语言源失败：" + e.GetType().Name + " " + e.Message);
             }
-
-            if (World.DefaultGameObjectInjectionWorld != null)
-            {
-                m_Setting.RegisterInOptionsUI();
-                log.Info("选项页已注册");
-            }
-            else
-            {
-                log.Warn("世界未就绪，选项页未注册");
-            }
-
-            try
-            {
-                Colossal.IO.AssetDatabase.AssetDatabase.global.LoadSettings(
-                    nameof(BusLineAutoStops), m_Setting, new Setting(this));
-            }
-            catch (Exception e)
-            {
-                log.Warn("读取设置失败，用默认值：" + e.GetType().Name);
-            }
-            m_Setting.SyncToState();
-
-            RegisterHotkeys();
-
-            m_Harmony = new Harmony("com.buslineautostops");
-            int patched = 0;
-            string hookErr = null;
-            try
-            {
-                patched = RouteToolPatches.Install(m_Harmony, out hookErr);
-                patched += ObjectSelectPatches.Install(m_Harmony, out hookErr);
-            }
-            catch (Exception e)
-            {
-                hookErr = e.GetType().Name + ": " + e.Message;
-            }
-            log.Info("[Hook] 补丁 " + patched + (hookErr != null ? "；问题：" + hookErr : " 个已安装"));
-
-            try
-            {
-                updateSystem.UpdateAt<AutoPlaceSystem>(SystemUpdatePhase.ToolUpdate);
-                updateSystem.UpdateAt<StopGhostSystem>(SystemUpdatePhase.ToolUpdate);
-                updateSystem.UpdateAt<UiCommandSystem>(SystemUpdatePhase.UIUpdate);
-                log.Info("系统已注册：AutoPlace / StopGhost / UiCommand");
-            }
-            catch (Exception e)
-            {
-                LazyModeState.Broken = true;
-                log.Error("系统注册失败，本模组不介入：" + e.GetType().Name + " " + e.Message);
-            }
         }
 
         public void OnDispose()
         {
-            try
-            {
-                if (m_Harmony != null)
-                {
-                    m_Harmony.UnpatchAll(m_Harmony.Id);
-                    m_Harmony = null;
-                }
-            }
-            catch (Exception) { }
             Setting.Instance = null;
             Instance = null;
             log.Info("BusLine AutoStops disposed");
@@ -132,37 +144,100 @@ namespace BusLineAutoStops
         {
             try
             {
-                m_Setting.RegisterKeyBindings();
                 ProxyAction a = m_Setting.GetAction(Setting.kActionToggleLazy);
                 if (a == null)
                 {
-                    log.Warn("[快捷键] 未取得 action");
+                    log.Warn("[快捷键] 未取得 action（setting.id=" + m_Setting.id + "）");
                     return;
                 }
 
                 ProxyBinding b = m_Setting.ToggleLazyBinding;
-                if (IsBindablePath(b.path))
+                string path = b != null ? b.path : null;
+                a.shouldBeEnabled = IsBindablePath(path) && LazyModeState.Enabled;
+                if (!LazyModeState.Enabled)
                 {
-                    a.shouldBeEnabled = true;
-                }
-                else
-                {
-                    a.shouldBeEnabled = false;
-                    log.Info("[快捷键] 未绑定，不启用 action（防幻影触发）");
+                    log.Info("[快捷键] 总开关已关，暂不启用 action");
                 }
 
                 a.onInteraction += (action, phase) =>
                 {
                     if (phase != InputActionPhase.Started) return;
-                    try { OnToggleLazy(); }
+                    if (!LazyModeState.Enabled) return;
+                    try { OnToggleLazy("快捷键"); }
                     catch (Exception e) { log.Warn("快捷键处理失败：" + e.Message); }
                 };
-                log.Info("[快捷键] ToggleLazyMode 已注册 path=" + (b.path ?? "(empty)"));
+                log.Info("[快捷键] ToggleLazyMode 已注册 path=" + (path ?? "(empty)"));
             }
             catch (Exception e)
             {
                 log.Warn("注册快捷键失败：" + e.GetType().Name);
             }
+        }
+
+        /// <summary>
+        /// 键位有三层：盘上的 m_Path / 属性里的 ProxyBinding / 实际生效的 InputBinding。
+        /// 旧版只打了第一层，所以“日志说有键、按下去没反应”看不出来。这里三层都打。
+        /// </summary>
+        private void ReportKeyBindings(string when)
+        {
+            try
+            {
+                ProxyAction a = m_Setting.GetAction(Setting.kActionToggleLazy);
+                if (a == null) { log.Warn("[键位] " + when + "：action 为空"); return; }
+                log.Info("[键位] " + when + " enabled=" + a.enabled + " shouldBeEnabled=" + a.shouldBeEnabled);
+                if (a.bindings == null) return;
+                foreach (ProxyBinding b in a.bindings)
+                {
+                    string p = string.IsNullOrEmpty(b.path) ? "(empty)" : b.path;
+                    string c = "none";
+                    try
+                    {
+                        var vs = b.conflicts;
+                        if (vs != null && vs.Count > 0)
+                        {
+                            c = "";
+                            for (int i = 0; i < vs.Count; i++)
+                            {
+                                ProxyBinding other = vs[i];
+                                c += (i > 0 ? " ; " : "") + other.mapName + "/" + other.actionName
+                                    + "[" + other.name + "]=" + other.path
+                                    + (other.isBuiltIn ? "(built-in)" : "(mod)");
+                            }
+                        }
+                    }
+                    catch (Exception) { }
+                    log.Info("[键位] " + when + " device=" + b.device + " path=" + p
+                        + " isSet=" + b.isSet + " hasConflicts=" + b.hasConflicts + " vs " + c);
+                }
+            }
+            catch (Exception e)
+            {
+                log.Warn("[键位] 诊断失败：" + e.GetType().Name + " " + e.Message);
+            }
+        }
+
+        /// <summary>
+        /// 进游戏/编辑器场景后再打一次键位状态。加载时 enabled=False 往往只是场景还没就绪，
+        /// 只有"已经在场景里、activeTool 存在、enabled 仍是 False"才说明快捷键真的不会触发；
+        /// 0.3.1 分不清这两种情况，所以按了没反应时无从判断断在哪一层。
+        /// </summary>
+        public void ReportKeysInGame()
+        {
+            try
+            {
+                ProxyAction a = m_Setting.GetAction(Setting.kActionToggleLazy);
+                if (a == null)
+                {
+                    log.Warn("[键位] 进游戏后：action 为空");
+                    return;
+                }
+                log.Info("[键位] 进游戏后 enabled=" + a.enabled + " shouldBeEnabled=" + a.shouldBeEnabled);
+            }
+            catch (Exception e)
+            {
+                log.Warn("[键位] 进游戏后诊断失败：" + e.GetType().Name);
+            }
+            ReportKeyBindings("进游戏后");
         }
 
         /// <summary>未绑键路径不得启用 action（Playbook §3.2 幻影触发）。</summary>
@@ -172,19 +247,26 @@ namespace BusLineAutoStops
             string p = path.Trim();
             if (p.Length == 0) return false;
             if (p == "<Keyboard>/" || p == "<Keyboard>") return false;
-            // 至少要有设备后的具体绑定
             int slash = p.IndexOf('/');
             if (slash < 0 || slash >= p.Length - 1) return false;
             return true;
         }
 
         /// <summary>快捷键 / 前端按钮 共用入口。</summary>
-        public void OnToggleLazy()
+        public void OnToggleLazy(string source = "快捷键")
         {
             float now = UnityEngine.Time.realtimeSinceStartup;
-
-            // 先刷新一次「当前选中站台」，避免依赖 SetPrefab 钩子
             StationSelectTracker.EnsureFresh();
+            log.Info("[入口] OnToggleLazy source=" + source + " lazy=" + LazyModeState.LazyEnabled
+                + " enabled=" + LazyModeState.Enabled
+                + " lineKind=" + LazyModeState.ActiveLineKind
+                + " station=" + StationAssets.SafeName(LazyModeState.SelectedStationPrefab));
+
+            if (!LazyModeState.Enabled)
+            {
+                LazyModeState.ShowWarning(LocaleTable.PanelKey("WARN_MASTER_OFF"), 2.5f, now);
+                return;
+            }
 
             if (LazyModeState.LazyEnabled)
             {
@@ -192,69 +274,137 @@ namespace BusLineAutoStops
                 return;
             }
 
-            log.Info("[懒人模式] 尝试进入 selected=" + LazyModeState.SelectedStationPrefabKey
-                     + " kind=" + LazyModeState.SelectedStationKind);
-
-            if (LazyModeState.SelectedStationKind == TransportKind.None
-                || string.IsNullOrEmpty(LazyModeState.SelectedStationPrefabKey))
+            // 需求 3（v0.6.0）：进入懒人模式**不需要先选中站台，也不再切换任何工具**。
+            // 这里只是给资产面板的过滤定一个起点类别：优先玩家当前选中的站台资产类别，
+            // 其次线路工具正在画的类别，都没有就按公交算（需求 5，0.9.0：这条已经被实机确认——
+            // 空手按快捷键也会 `[线路工具] 已请求切到 Bus Line 结果=True`）。玩家随后点了别的
+            // 同类资产，LazyModeSystem / StationSelectTracker 会让类别跟着走。
+            // 需求 4（0.9.0）：判定用 IsLazyModeEnabled —— 电车本版暂未上线，画电车线时按快捷键
+            // 不进入懒人模式（给专门的提示），而不是把电车当成"支持的类别"跑半套逻辑。
+            TransportKind kind = TransportKind.Bus;
+            if (TransportKindRules.IsLazyModeEnabled(LazyModeState.SelectedStationKind, LazyModeState.TramEnabled)
+                && LazyModeState.SelectedStationKind != TransportKind.None)
             {
-                LazyModeState.ShowWarning(LocaleTable.PanelKey("WARN_SELECT_STATION"), 3f, now);
-                log.Info("[懒人模式] 拒绝进入：未选择站台资产");
+                kind = LazyModeState.SelectedStationKind;
+            }
+            else if (TransportKindRules.IsLazyModeEnabled(LazyModeState.ActiveLineKind, LazyModeState.TramEnabled)
+                && LazyModeState.ActiveLineKind != TransportKind.None)
+            {
+                kind = LazyModeState.ActiveLineKind;
+            }
+
+            if (!TransportKindRules.IsLazyModeEnabled(kind, LazyModeState.TramEnabled))
+            {
+                // 火车/地铁/机场/码头走的是车站（Station）体系，放置规则跟道路无关，不放开；
+                // 有轨电车是"机制还没做完"（见 Setting.TramEnabled），单独一句话告诉玩家为什么。
+                LazyModeState.ShowWarning(UnsupportedLineKey(kind), 3f, now);
+                log.Info("[懒人模式] 拒绝进入：当前类型 " + kind + " 本版未放开（公交=开，电车="
+                    + LazyModeState.TramEnabled + "）");
                 return;
             }
 
-            if (!TransportKindRules.IsLazyModeSupported(LazyModeState.SelectedStationKind))
+            LazyModeState.ModeKind = kind;
+            // 需求 4（0.9.0）：起点类别和"手上选中的站台资产"不是一类时（电车暂未上线却选了电车站、
+            // 或画着公交线手里拿的是电车站），把手上的选择让位给类别。懒人模式只按 ModeKind 取资产，
+            // 绝不拿跨类资产去预览或落地——那会让"看到的"和"放下的"不是同一种东西。
+            if (LazyModeState.SelectedStationKind != kind)
             {
-                LazyModeState.ShowWarning(LocaleTable.PanelKey("WARN_NOT_BUS"), 3f, now);
-                log.Info("[懒人模式] 拒绝进入：类型 " + LazyModeState.SelectedStationKind + " 未启用");
-                return;
+                LazyModeState.SelectedStationPrefab = null;
+                LazyModeState.SelectedStationKind = TransportKind.None;
             }
 
-            LazyModeState.ModeKind = LazyModeState.SelectedStationKind;
+            // 需求 3：进入懒人模式必须在创建线路工具下进行，切工具这件事交给系统帧做
+            LazyModeState.PendingLineKind = kind;
             LazyModeState.LazyEnabled = true;
             LazyModeState.UiSeq++;
-            log.Info("[懒人模式] 开启 kind=" + LazyModeState.ModeKind + " prefab=" + LazyModeState.SelectedStationPrefabKey);
+            // 需求 3：每次进入都重算资产面板过滤集（换存档/换资产包后站台实体的 index:version 会变，
+            // 用缓存的旧名单会藏错东西）。AssetFilterService 的缓存就按这个序号失效。
+            LazyModeState.InvalidateAssetFilter();
+            LazyModeSystem.BeginSession();
+            log.Info("[懒人模式] 开启 kind=" + kind + " 当前工具=" + ActiveToolName()
+                + " 面板起点类别=" + kind);
+        }
 
-            // 切换到创建线路工具（公交）。失败不阻断懒人模式状态。
+        /// <summary>
+        /// 这类线路不让进懒人模式时给玩家看哪句话（需求 4，0.9.0）：
+        /// 有轨电车是"暂未上线"，火车/地铁/机场/码头才是"本模组不管这一类"。
+        /// </summary>
+        internal static string UnsupportedLineKey(TransportKind kind)
+        {
+            return LocaleTable.PanelKey(kind == TransportKind.Tram ? "WARN_TRAM_OFF" : "WARN_UNSUPPORTED_LINE");
+        }
+
+        /// <summary>日志用：当前工具叫什么（拿不到就写 None，绝不因为记日志影响功能）。</summary>
+        private string ActiveToolName()
+        {
             try
             {
-                RouteToolPatches.ActivateBusLineTool();
+                if (World.DefaultGameObjectInjectionWorld == null) return "None";
+                ToolSystem ts = World.DefaultGameObjectInjectionWorld.GetExistingSystemManaged<ToolSystem>();
+                ToolBaseSystem t = ts != null ? ts.activeTool : null;
+                return t == null ? "None" : t.GetType().Name;
             }
-            catch (Exception e)
-            {
-                log.Warn("切换线路工具失败：" + e.Message);
-            }
+            catch (Exception) { return "Unknown"; }
+        }
+
+        /// <summary>
+        /// 需求 4：世界侧系统发现"已经不在创建线路工具里"就走这里退出。
+        /// 与玩家手动关闭的区别只有日志里的原因，处置策略仍然照玩家选的走。
+        /// </summary>
+        public void RequestExitLazyMode(string why)
+        {
+            if (!LazyModeState.LazyEnabled) return;
+            log.Info("[懒人模式] 自动退出：" + why);
+            ExitLazyMode();
         }
 
         private void ExitLazyMode()
         {
             ExitDeletePolicy policy = LazyModeState.ExitPolicy;
             LazyModeState.LazyEnabled = false;
+            LazyModeState.ModeKind = TransportKind.None;
             LazyModeState.UiSeq++;
 
-            var stops = new System.Collections.Generic.List<string>();
-            var stations = new System.Collections.Generic.List<string>();
-            PlacedStopRegistry.CollectExitDeletes(policy, stops, stations);
+            // 世界改动只能在系统帧内做（原版工具的输出窗口），这里只挂请求
+            LazyModeState.PendingExitPolicy = policy;
+            LazyModeState.PendingExitCleanup = true;
 
-            if (stops.Count > 0 || stations.Count > 0)
-            {
-                try
-                {
-                    AutoPlaceSystem.ApplyExitDeletes(stops, stations);
-                    log.Info("[懒人模式] 退出清理 stops=" + stops.Count + " stations=" + stations.Count + " policy=" + policy);
-                }
-                catch (Exception e)
-                {
-                    log.Warn("退出清理失败：" + e.Message);
-                }
-            }
-            else
-            {
-                log.Info("[懒人模式] 关闭 policy=" + policy + "（无删除或无记录）");
-            }
-
-            PlacedStopRegistry.ClearSession();
-            LazyModeState.ModeKind = TransportKind.None;
+            log.Info("[懒人模式] 手动关闭，退出清理请求已排队 policy=" + policy);
         }
+
+        /// <summary>
+        /// 总开关被关掉：懒人模式如果在开着就退出（走玩家自己选的退出策略），
+        /// 并把快捷键 action 停掉，避免"按钮没了、键还能用"。
+        /// </summary>
+        public void TurnOffIfLazy()
+        {
+            ApplyMasterToHotkey();
+            if (LazyModeState.LazyEnabled)
+            {
+                ExitLazyMode();
+            }
+        }
+
+        /// <summary>总开关关掉时禁用快捷键；打开时按"有没有绑了可用的键"决定。</summary>
+        private void ApplyMasterToHotkey()
+        {
+            try
+            {
+                ProxyAction a = m_Setting.GetAction(Setting.kActionToggleLazy);
+                if (a == null) return;
+                ProxyBinding b = m_Setting.ToggleLazyBinding;
+                a.shouldBeEnabled = LazyModeState.Enabled && IsBindablePath(b != null ? b.path : null);
+                log.Info("[快捷键] 跟随总开关 shouldBeEnabled=" + a.shouldBeEnabled);
+            }
+            catch (Exception e)
+            {
+                log.Warn("[快捷键] 更新启用状态失败：" + e.GetType().Name);
+            }
+        }
+
+        // v0.6.0 删掉了 ExitLazyModeCompleted(bool applied)：那是"懒人模式占用线路工具、线路画完
+        // 自动退出"那套设计的产物。本版懒人模式不拥有任何工具（只是代替玩家按下放置键），
+        // 所以退出只发生在图标/快捷键/总开关上；线路自己完成或取消都跟懒人模式无关
+        // （需求 5：原版"线路没完成就退出时停靠点本来就不保留"，我们不对抗、也不参与判定）。
     }
 }

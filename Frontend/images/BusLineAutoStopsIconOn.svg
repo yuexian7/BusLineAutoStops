@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <!-- 需求 5：开启懒人模式时**图案**变红，蓝底不动（不再覆盖 background-color）。
+       红色取原版主题的 --negativeColor（#e95f4a），和游戏自己的告警色一致。 -->
+  <rect x="7" y="5" width="30" height="5" fill="#e95f4a" />
+  <rect x="8" y="10" width="4" height="17" fill="#e95f4a" />
+  <rect x="32" y="10" width="4" height="17" fill="#e95f4a" />
+  <rect x="3" y="33" width="42" height="4" fill="#e95f4a" />
+  <circle cx="8" cy="35" r="6" fill="#e95f4a" />
+  <circle cx="24" cy="35" r="6" fill="#e95f4a" />
+  <circle cx="40" cy="35" r="6" fill="#e95f4a" />
+</svg>

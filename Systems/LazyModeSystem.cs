@@ -1,0 +1,2042 @@
+using System;
+using System.Collections.Generic;
+using Colossal.Entities;
+using Colossal.Mathematics;
+using Game;
+using Game.Common;
+using Game.Net;
+using Game.Prefabs;
+using Game.Routes;
+using Game.Tools;
+using Unity.Collections;
+using Unity.Entities;
+using Unity.Mathematics;
+
+namespace BusLineAutoStops.Systems
+{
+    /// <summary>
+    /// v0.8.1 的世界侧系统：需求 2/5 的"预览公交站 + 左键才落地"在这里实现。
+    ///
+    /// 机制（全部按 1.6.2 反编译取证，file:line 见开发笔记 v0.8.0/v0.8.1 两节）：
+    ///
+    /// 1) **预览**：悬停路径点（RouteToolSystem.GetControlPoints 的最后一个控制点，公开 API）
+    ///    静止满 0.1s → 本系统喂一枚定义实体
+    ///    `CreationDefinition{m_Prefab=站台资产, m_Attached=解析出的合法父级, m_Flags=Attach|Optional}
+    ///    + ObjectDefinition + Updated`（走 ToolOutputBarrier，与原版工具同一条通道）。
+    ///    帧内真实顺序（校正 #66/#67，别按 SystemUpdatePhase 的数字大小想）：MainLoop 里
+    ///    ToolSystem.OnUpdate 先级联 PreTool→ToolUpdate（各工具 → 我们 → ToolOutputSystem→ClearTool/ApplyTool→PostTool），
+    ///    然后 ModificationSystem 级联 Modification1（GenerateObjectsSystem 出 Temp 幽灵）→ Modification4
+    ///    （AttachPositionSystem 吸人行道）→ ModificationEnd（ValidationSystem）。
+    ///    所以**本帧喂的定义同帧就出幽灵**；光标继续不动时线路工具写 applyMode=None（RouteToolSystem.cs:2166），
+    ///    Temp 留得住 = 预览显示；
+    ///    光标一动写 Clear → ToolClearSystem 销毁所有 Temp（:218 查询只有 Temp）= 预览消失。
+    ///    Optional 标记让原版校验**自动撤销**我们幽灵上的错误（ValidationSystem.cs:1659 CancelOptional），
+    ///    预览永远不挡玩家的点击。喂出去下一帧把幽灵**认领**回来登记成"世上唯一那一枚"
+    ///    （MaintainPreview：它还活着就一帧都不再喂；被原版 Clear 收走了才补喂），
+    ///    并在认领那一刻按吸附后的实际落位做查重。
+    ///    0.8.2 是无条件每帧喂 —— 光标停住时原版写 None 不清 Temp，一秒堆 60 枚幽灵，
+    ///    玩家截图"一停就冒出一大排停靠点图标"，见 #78 的补充。
+    ///
+    /// 1b) **父级解析**（v0.8.1 的核心修正）：控制点的 `m_OriginalEntity` 是射线结果的 `m_Owner`
+    ///    （ToolBaseSystem.cs:550-561），而且 SnapJob 会把它改写成"正在画的这条线"的 temp 线路
+    ///    或既有线路实体（RouteToolSystem.cs:156-158、:183-191）。拿它当"能不能在路边放站台"的判据，
+    ///    就是 0.8.0 实机把 27 次静止事件全拒、一个预览都没出的原因。现在按
+    ///    `AttachPositionSystem.FixAttachedPosition`（:155-175）真正认的形态自己找父级：
+    ///    工具给的 → 射线 m_Owner → 射线 m_HitEntity → 命中物 Owner 链，第一个"带 Node"或
+    ///    "带 Composition+EdgeGeometry+Curve 且其 edge 有 NetCompositionArea 缓冲"的算数。
+    ///
+    /// 2) **左键落地**：点击帧线路工具写 Clear 并把点击位置收进控制点（cps.Length +1）。
+    ///    本系统在 ToolOutputSystem 之前读到这次增长 → 也喂一枚定义（不带 Optional）；
+    ///    同帧 Modification1 造出提交用 Temp；下一帧本系统找到它，先查 Game.Tools.Error
+    ///    （有错就不转正，等原版清掉），没错误就照抄 ApplyObjectsSystem.cs:922-923 的转正：
+    ///    移除 {Temp, Animation, BackSide}、加 {Applied, Created, Updated}（Game.Common.*）。
+    ///    转正后它是普通永久建筑，ToolClearSystem 再也清不掉。
+    ///
+    /// 3) **路径点依附**：转正的当帧把控制点 cps[n-2] 的 m_OriginalEntity 改写成站台实体、
+    ///    m_Position 改写成站台落位（GetControlPoints 返回的 NativeList 与工具共享缓冲，
+    ///    写前 deps.Complete()）。线路完成那一下，RouteToolSystem.GetWaypointDefinition
+    ///    （RouteToolSystem.cs:832）读到 m_OriginalEntity 身上有 ConnectedRoute 缓冲 →
+    ///    WaypointDefinition.m_Connection = 站台 → 建成的线路停靠点真正连到站台
+    ///    （WaypointConnectionSystem 反向回填 ConnectedRoute，:111-113）。
+    ///    SnapJob 只处理最后一个控制点（RouteToolSystem.cs:132 index=Length-1），已提交点不会被碰。
+    ///
+    /// 4) **右键撤点**：Create 态 Cancel 是 RemoveAtSwapBack(最后一点)+覆盖悬停点
+    ///    （RouteToolSystem.cs:1785-1800）→ cps.Length -1。长度 -1 = 撤一个停靠点：
+    ///    先撤还没转正的待提交，再从已落地栈顶弹出一个，走 DeleteIfSafe（ConnectedRoute
+    ///    活引用保护）。长度掉 ≥2 只可能是线路完成（Clear 清空+补悬停点，:1967 Apply）→
+    ///    站台全部保留、账本清零。
+    ///
+    /// 热路径纪律（需求 6）：懒人模式没开一个 bool 早退；定义只在静止事件沿/点击沿各喂一次，
+    /// 平稳帧零 ECS 读写；索引 0.5s（回退 2s）节流。
+    /// </summary>
+    public partial class LazyModeSystem : GameSystemBase
+    {
+        /// <summary>
+        /// 静止阈值（秒）。v0.6.0 是 0.3s，v0.8.2 按需求降到 0.1s，v0.10.0 回到 **0.18s**：
+        /// 实机（2026-10-08 16:10 会话）`[预览无幽灵] … 世界 Temp 数=0` 有 204 次，配合玩家的
+        /// "看起来有闪烁感" —— 0.1s 会被拖鼠标途中的自然微停顿触发，一停就喂、一动就收，
+        /// 于是每 100ms 亮一次。人手"我是想停下来放个站"的停顿通常在 150~300ms 之间，
+        /// 0.18s 既躲开路过式微停，又不到"觉得卡"的程度（再往上一档是 0.25s，手感就钝了）。
+        /// </summary>
+        internal const float kSettleSeconds = 0.18f;
+
+        /// <summary>落点位移超过这个值就算"还在移动"，静止计时重来。</summary>
+        internal const float kMoveEpsilon = 0.5f;
+
+        /// <summary>
+        /// 预览的**淡出**时间（秒，需求 3 后半）：0.9.0 是"光标一动马上把幽灵标 Deleted 收走"，
+        /// 结果幽灵活不到被认领（认领要等 2 帧）就被自己删了 → 闪烁 + 204 次"世界 Temp 数=0"。
+        /// 现在改成连续移动满 0.15s 才收：微停顿（&lt;0.15s）幽灵原地不动，重新停住还沿用同一枚。
+        /// </summary>
+        internal const float kPreviewFadeSeconds = 0.15f;
+
+        /// <summary>重新停住时，落点离"玩家正在看的那一枚"喂点不超过这个距离就直接沿用（米）。</summary>
+        internal const float kPreviewKeepRadius = 2.5f;
+
+        /// <summary>
+        /// 射线真实命中点离工具悬停点最远允许多大（米），超过就当这条射线不可信、退回悬停点。
+        /// 需求 1（v0.10.0）用命中点取回"光标真正在哪一侧"，但命中点偶尔会飞到建筑立面、
+        /// 树冠或者另一条路上（悬停点已经被工具的 SnapJob 吸到线路上了），那种不能要。
+        /// 四车道半宽 ~6m、八车道 ~13m，40m 足够宽又足够把飞点挡住。
+        /// </summary>
+        internal const float kCursorMaxDrift = 40f;
+
+        /// <summary>喂出去之后**逐帧**认领，最多等这么多帧（0.9.0 只给 2 帧，卡一帧就算"没造出幽灵"）。</summary>
+        internal const int kClaimMaxFrames = 10;
+
+        /// <summary>
+        /// "这里已经有同类站台了"的判距（米）。**量的是站台实际落位之间的距离，不是光标到站台**：
+        /// 实机（2026-10-07 23:02 会话）预览幽灵的落位平均离悬停点 5~7m，四车道以上更宽，
+        /// 拿悬停点量 10m 会把"隔着半条路"的对面站台算成重复，大路于是永远不放站。
+        ///
+        /// 0.9.0 再把 10m 收到 4m：实机（2026-10-08 03:22 会话）`[预览收回] … 相距 5.0m / 7.1m / 7.5m`
+        /// —— 玩家刚放下一个站台，沿路再停 5~7 米想放第二个，就被这条 10m 判据当重复收回，
+        /// 表现成"预览时现时不现、宽路上干脆不放"。这条规则的目的从来只是"别在同一处叠第二个"，
+        /// 4m 足够；再远的间距归原版线路自己管（RouteData.m_MinWaypointDistance）。
+        /// </summary>
+        internal const float kSnapDistance = 4f;
+
+        /// <summary>悬停点就地查重用的小半径：光标基本压在已有站台上时直接不喂定义，省一次白干。</summary>
+        internal const float kHoverSkipDistance = 3f;
+
+        /// <summary>
+        /// 人行道被路灯 / 垃圾桶之类占住时的**沿路让位**阶梯（米，沿道路切向，0=原位）。
+        /// 只在"原版根本没给出幽灵"这一档才往后退（见 ClaimPendingPreview）：
+        /// 占位重叠在原版只是 Warning（站台照样能放，放下时障碍物自己消失），
+        /// 0.9.0 把预览从 Optional 换成自控 Error 之后，Warning 已经不再让幽灵消失，
+        /// 剩下要避的只有"原版直接不生成"这一种，让位阶梯是给它的兜底。
+        ///
+        /// 0.10.0 需求 1 把方向从**横向**改成**沿路**：横向让位会跨过道路中线，
+        /// 光标在右、幽灵被让到左，正好把这条修正过的落位又弄回玩家报的那个 bug
+        /// （实机 2026-10-08 16:10 会话 `[预览让位]` 814 次 —— 绝大多数是 0.9.0 那个
+        /// 2 帧认领窗口误判出来的，见 kClaimMaxFrames，但阶梯本身的方向是错的）。
+        /// 沿路挪一档同样能躲开"这一寸被占住"，而且永不换边。
+        /// 绝不动世界里的任何物件：鼠标一移开，我们把幽灵标 Deleted 收走，障碍物一直都在原地。
+        /// </summary>
+        internal static readonly float[] kSlideNudges = { 0f, 2.5f, -2.5f, 5f, -5f };
+
+        internal const float kRefreshSeconds = 0.5f;
+        internal const float kFallbackRefreshSeconds = 2f;
+
+        /// <summary>
+        /// "这一类根本没有可用站台资产"的负缓存重试间隔（秒）。
+        /// 没有这条的话，`TryGetStopPrefab` 走兜底分支时会**每帧**把 PrefabSystem 的全部资产
+        /// 枚举一遍再逐条分类（`StationAssets.FindFallbackStop`），资产多的存档一帧就是上万次阅读 ——
+        /// 与 BlueprintHub 崩溃交接里"404 没有负缓存 → 永久重试"完全同构，只是我们把重试做在了每帧。
+        /// 类别一变 / 换资产 / 开新一场都会把 `m_fallbackKind` 清成 None 或把时刻归零，立刻恢复扫描。
+        /// </summary>
+        internal const float kFallbackRetrySeconds = 5f;
+
+        /// <summary>
+        /// 提交 Temp 的查找容差（米），**量的是"我们喂下去的那一处"到 Temp 实际落位**。
+        /// 0.8.2 是 6m 且量的是路中央的停靠点：实机（2026-10-08 03:32）Large Road 上
+        /// `[预览结果] 幽灵已出，离落点 8.6m` 紧跟着 `[落点提交] … 等不到原版生成，放弃`
+        /// —— 幽灵早就造出来了，只是落在人行道，离路中央 8.6m，6m 半径根本没看见它。
+        /// 六车道这条路于是"左键放不上站"，而小路（4.1m）一直正常。
+        /// </summary>
+        internal const float kCommitMatchTolerance = 20f;
+
+        /// <summary>左键那一笔离"玩家看见的那枚幽灵"多远以内就直接用它转正（米）。</summary>
+        internal const float kPreviewReuseRadius = 15f;
+
+        /// <summary>停靠点匹配容差：依附改写要在控制点里认出"就是这一笔"（米）。</summary>
+        internal const float kCpMatchTolerance = 8f;
+
+        /// <summary>待提交最多等多少帧才放弃。</summary>
+        internal const int kCommitMaxWaitFrames = 30;
+
+        private ToolSystem m_ToolSystem;
+        private PrefabSystem m_PrefabSystem;
+
+        private EntityQuery m_stopQuery;
+        private EntityQuery m_objectQuery;
+        private EntityQuery m_tempQuery;
+
+        private ToolOutputBarrier m_OutputBarrier;
+
+        internal static LazyModeSystem Instance;
+
+        private readonly StopIndex m_stops = new StopIndex();
+        private float m_nextRefresh;
+        private bool m_useFallback;
+        private bool m_stopQueryVerified;
+        private TransportKind m_indexKind = TransportKind.None;
+
+        private float3 m_lastPos = new float3(float.MaxValue, float.MaxValue, float.MaxValue);
+        private float m_settledSince;
+        private bool m_settled;
+
+        /// <summary>本静止事件里"跳过"的日志已经打过一次（失败原因每帧一样，不打第二遍刷屏）。</summary>
+        private bool m_previewFailLogged;
+
+        /// <summary>本静止事件里成功喂送的日志 + 探针已经做过一次。</summary>
+        private bool m_previewAnnounced;
+
+        /// <summary>本静止事件不再喂：原版没造出幽灵，或造出来的落位已经有别的同类站台。</summary>
+        private bool m_previewRefused;
+
+        /// <summary>父级判定抛异常只报一次（静默 false 会让"这条路上没预览"看起来像规则问题）。</summary>
+        private bool m_attachFailLogged;
+
+        /// <summary>原版射线系统（活跃工具的 mask 每帧由线路工具覆写，画线时命中本来就带人行道层）。</summary>
+        private ToolRaycastSystem m_ToolRaycast;
+
+        /// <summary>
+        /// 我们那一枚预览幽灵（世上只留一枚：它还活着就一帧都不喂）。
+        /// 0.8.2 每帧无条件喂，结果光标停住时原版根本不写 Clear、Temp 全留下来，
+        /// 一秒堆 60 枚 —— 玩家截图里"非常快出现一大堆停靠点图标"就是这个。
+        /// </summary>
+        private Entity m_previewTemp;
+
+        /// <summary>上一枚定义已经喂出去、还没认领到幽灵（认领改成逐帧追，见 kClaimMaxFrames）。</summary>
+        private bool m_previewFed;
+
+        /// <summary>喂出去之后等了几帧（0.9.0 的"固定 2 帧窗口"会漏认：卡一帧就当"原版没造出"）。</summary>
+        private int m_previewWaitFrames;
+
+        /// <summary>光标开始移动的时刻（0=幽灵不欠收）；连续移动满 kPreviewFadeSeconds 才真收。</summary>
+        private float m_ghostMoveSince;
+
+        /// <summary>"原版判定不通过（Error）"这条收回日志每个静止事件只打一次。</summary>
+        private bool m_previewEmptyLogged;
+
+        /// <summary>需求 2（v0.10.0）：拒绝删原版副本的日志整场只打一次（真出现就说明哪条路走错了）。</summary>
+        private bool m_foreignTempGuardLogged;
+
+        /// <summary>上一轮"找兜底站台"的全量枚举时刻（秒）；配合 kFallbackRetrySeconds 当负缓存用。</summary>
+        private float m_fallbackScanAt = -999f;
+
+        /// <summary>上一轮整表扫描**确认没有**可用站台的那一类别（负缓存的键；扫到了就归 None）。</summary>
+        private TransportKind m_fallbackScanFail = TransportKind.None;
+
+        /// <summary>
+        /// BeginSession（快捷键 / UI 回调，在工具级联之外）挂进来的"收上一场残留幽灵"请求。
+        /// 结构改动只能在系统帧里做，所以 OnUpdate 开头消费它。
+        /// </summary>
+        private bool m_beginCleanupPending;
+
+        /// <summary>OnDestroy 已跑过：静态入口（BeginSession / RequestAssetRefresh）据此拒绝再碰这个已销毁的系统。</summary>
+        private volatile bool m_destroyed;
+
+        /// <summary>当前用的是第几档沿路让位（kSlideNudges 下标）。</summary>
+        private int m_nudgeIndex;
+
+        /// <summary>玩家看见的那一处落位：左键提交时照它喂，预览与落地才是同一个地方。</summary>
+        private float3 m_previewSpot;
+
+        /// <summary>这一枚预览用的是哪个资产（认领时按它找 Temp，省得每帧重新解析资产）。</summary>
+        private Entity m_previewPrefab;
+
+        private bool m_hasPreviewSpot;
+
+        /// <summary>那一枚幽灵的依附父级（转正时给控制点改写用，也让"沿用预览"能复用同一条边）。</summary>
+        private Entity m_previewParent;
+
+        /// <summary>探测容差：AttachPositionSystem 会把幽灵横向吸到人行道，留足余量。</summary>
+        internal const float kProbeTolerance = 25f;
+
+        private bool m_haveCpCount;
+        private int m_lastCpCount;
+
+        /// <summary>已落地的会话站台（LIFO，右键撤点从栈顶删；线路完成时清空=全部保留）。</summary>
+        private readonly List<Entity> m_placed = new List<Entity>();
+
+        /// <summary>已点击、等原版把 Temp 造出来的待提交。</summary>
+        private struct PendingCommit
+        {
+            /// <summary>左键那一笔的停靠点位置（控制点匹配用，一直在路中央）。</summary>
+            public float3 Position;
+
+            /// <summary>我们把定义喂下去的那一处（人行道侧），Temp 查找按它量。</summary>
+            public float3 FeedPos;
+
+            /// <summary>非 Null = 直接拿玩家看见的那枚预览幽灵转正，不再二次喂定义。</summary>
+            public Entity Temp;
+
+            public Entity Parent;
+            public Entity Prefab;
+            public int WaitedFrames;
+        }
+
+        private readonly List<PendingCommit> m_pending = new List<PendingCommit>();
+
+        /// <summary>站台资产兜底缓存（选中资产为空时才用；按类别失效）。</summary>
+        private PrefabBase m_fallbackStop;
+        private TransportKind m_fallbackKind = TransportKind.None;
+
+        protected override void OnCreate()
+        {
+            base.OnCreate();
+            // 静态状态是**进程级**的：换一个存档不会重载程序集，但实体会跟着旧世界一起销毁。
+            // 于是 SelectedStationPrefab / ModeKind 这类可能留着"上一个世界里那块已被销毁的 PrefabBase"
+            // 和"上一场还开着懒人模式"的状态混进新场 —— 拿它们去喂创建定义就是拿失效句柄调引擎 API。
+            // 新世界建好系统时一律清一遍（OnCreate 每次世界创建只跑一次）。
+            LazyModeState.ResetForNewWorld();
+
+            m_ToolSystem = World.GetExistingSystemManaged<ToolSystem>();
+            m_PrefabSystem = World.GetExistingSystemManaged<PrefabSystem>();
+            m_OutputBarrier = World.GetOrCreateSystemManaged<ToolOutputBarrier>();
+            m_ToolRaycast = World.GetExistingSystemManaged<ToolRaycastSystem>();
+            Instance = this;
+
+            m_stopQuery = GetEntityQuery(new EntityQueryDesc
+            {
+                // 站台标记类型是 Game.Routes.BusStop / TramStop（Game.Objects.TransportStop 不存在）
+                All = new ComponentType[] { ComponentType.ReadOnly<ConnectedRoute>() },
+                Any = new ComponentType[]
+                {
+                    ComponentType.ReadOnly<Game.Routes.BusStop>(),
+                    ComponentType.ReadOnly<Game.Routes.TramStop>(),
+                },
+                None = new ComponentType[] { ComponentType.ReadOnly<Temp>() },
+            });
+
+            m_objectQuery = GetEntityQuery(new EntityQueryDesc
+            {
+                All = new ComponentType[]
+                {
+                    ComponentType.ReadOnly<Game.Objects.Transform>(),
+                    ComponentType.ReadOnly<PrefabRef>(),
+                },
+                None = new ComponentType[] { ComponentType.ReadOnly<Temp>() },
+            });
+
+            m_tempQuery = GetEntityQuery(new EntityQueryDesc
+            {
+                All = new ComponentType[]
+                {
+                    ComponentType.ReadOnly<Temp>(),
+                    ComponentType.ReadOnly<PrefabRef>(),
+                    ComponentType.ReadOnly<Game.Objects.Transform>(),
+                },
+                None = new ComponentType[] { ComponentType.ReadOnly<Deleted>() },
+            });
+        }
+
+        protected override void OnDestroy()
+        {
+            // 世界被销毁（退出到主菜单 / 换存档）时这里跑一次：静态入口靠这个标志拒绝再碰已死的系统。
+            m_destroyed = true;
+            if (ReferenceEquals(Instance, this)) Instance = null;
+            base.OnDestroy();
+        }
+
+        internal static LazyModeSystem Current { get { return Instance; } }
+
+        /// <summary>需求 3：懒人模式进行中换了站台资产 → 索引与兜底资产按新类别重来（只置标志，结构改动在系统帧里）。</summary>
+        public static void RequestAssetRefresh()
+        {
+            LazyModeSystem s = Instance;
+            if (s == null || s.m_destroyed) return;
+            s.m_stopQueryVerified = false;
+            s.m_useFallback = false;
+            s.m_fallbackStop = null;
+            s.m_fallbackKind = TransportKind.None;
+            s.m_fallbackScanFail = TransportKind.None;   // 换了资产就得重新扫一遍，负缓存立刻作废
+            s.InvalidateStops();
+        }
+
+        internal void InvalidateStops()
+        {
+            // 类别一变（公交↔有轨电车）旧条目就成了"别类的站台"，会让 10m 规则误拒。
+            // 索引本来就是靠查询整表重建的，清一次没有额外代价。
+            m_stops.Clear();
+            m_nextRefresh = 0f;
+        }
+
+        protected override void OnUpdate()
+        {
+            if (LazyModeState.Broken) return;
+
+            float now = UnityEngine.Time.realtimeSinceStartup;
+            LazyModeState.ClearWarningIfExpired(now);
+
+            if (LazyModeState.PendingExitCleanup)
+            {
+                LazyModeState.PendingExitCleanup = false;
+                RunExitCleanup(LazyModeState.PendingExitPolicy, now);
+                return;
+            }
+
+            // BeginSession 是在快捷键回调 / UI 绑定回调里跑的（工具级联之外），那里不能做结构改动；
+            // 所以"收上一场残留的幽灵"排到这个标志里，由本帧（我们真的在级联里、并且马上 Flush 依赖）执行。
+            if (m_beginCleanupPending)
+            {
+                m_beginCleanupPending = false;
+                FlushPendingJobs();
+                RetirePendingTemps();
+                RetirePreview();
+            }
+
+            if (!LazyModeState.Enabled || !LazyModeState.LazyEnabled)
+            {
+                SettleDwell(false);
+                m_haveCpCount = false;
+                return;
+            }
+
+            if (m_ToolSystem == null) m_ToolSystem = World.GetExistingSystemManaged<ToolSystem>();
+            if (m_PrefabSystem == null) m_PrefabSystem = World.GetExistingSystemManaged<PrefabSystem>();
+            if (m_ToolRaycast == null) m_ToolRaycast = World.GetExistingSystemManaged<ToolRaycastSystem>();
+            if (m_ToolSystem == null || m_PrefabSystem == null) return;
+
+            ToolBaseSystem active;
+            try { active = m_ToolSystem.activeTool; }
+            catch (Exception) { active = null; }
+
+            // —— 需求 3：进入懒人模式时玩家手里可能不是线路工具（比如他刚点过公交站资产，或者谁都没选）。
+            //     这里把"切到对应类型的创建线路工具"放在系统帧里做，不在按钮回调里动工具。
+            TransportKind want = LazyModeState.PendingLineKind;
+            if (want != TransportKind.None)
+            {
+                LazyModeState.PendingLineKind = TransportKind.None;
+                RouteToolSystem rt0 = active as RouteToolSystem;
+                TransportKind now0 = rt0 != null ? LineKindOf(rt0) : TransportKind.None;
+                if (now0 != want)
+                {
+                    PrefabBase line = StationAssets.FindFallbackLine(want);
+                    if (line == null)
+                    {
+                        LazyModeState.ShowWarning(LocaleTable.PanelKey("WARN_UNSUPPORTED_LINE"), 3f, now);
+                        BusLineAutoStopsMod.log.Warn("[线路工具] 找不到 " + want + " 线路资产，懒人模式不进入");
+                        BusLineAutoStopsMod.Instance.RequestExitLazyMode("没有可用的线路资产");
+                        return;
+                    }
+                    bool ok = false;
+                    try { ok = m_ToolSystem.ActivatePrefabTool(line); }
+                    catch (Exception e) { BusLineAutoStopsMod.log.Warn("[线路工具] 切换异常 " + e.GetType().Name); }
+                    BusLineAutoStopsMod.log.Info("[线路工具] 已请求切到 " + StationAssets.SafeName(line) + " 结果=" + ok);
+                    if (!ok)
+                    {
+                        BusLineAutoStopsMod.Instance.RequestExitLazyMode("切换线路工具失败");
+                        return;
+                    }
+                    try { active = m_ToolSystem.activeTool; }
+                    catch (Exception) { active = null; }
+                }
+            }
+
+            // —— 需求 4：懒人模式必须在线上跑。离开线路工具（切别的工具、ESC 回默认工具）就退出，图标复原。
+            RouteToolSystem route = active as RouteToolSystem;
+            if (route == null)
+            {
+                SettleDwell(false);
+                m_haveCpCount = false;
+                string name = SafeToolName(active);
+                BusLineAutoStopsMod.log.Info("[退出懒人模式] 当前工具不是线路工具（" + name + "）");
+                if (BusLineAutoStopsMod.Instance != null) BusLineAutoStopsMod.Instance.RequestExitLazyMode("离开线路工具");
+                return;
+            }
+
+            TransportKind kind = LineKindOf(route);
+            if (!TransportKindRules.IsLazyModeEnabled(kind, LazyModeState.TramEnabled))
+            {
+                // 需求 4（0.9.0）：电车本版暂未上线 —— 画到电车线就退出懒人模式，并给一句"暂未上线"，
+                // 不给一句"本模组不管这一类"（那是火车/地铁/机场/码头的话）。
+                SettleDwell(false);
+                LazyModeState.ShowWarning(BusLineAutoStopsMod.UnsupportedLineKey(kind), 3f, now);
+                BusLineAutoStopsMod.log.Info("[退出懒人模式] 这条线是 " + kind + "，本版未放开（电车暂未上线="
+                    + (kind == TransportKind.Tram) + "）");
+                if (BusLineAutoStopsMod.Instance != null) BusLineAutoStopsMod.Instance.RequestExitLazyMode("本版未放开的线路类型");
+                return;
+            }
+
+            if (LazyModeState.ModeKind != kind)
+            {
+                LazyModeState.ModeKind = kind;
+                LazyModeState.UiSeq++;
+                LazyModeState.InvalidateAssetFilter();
+            }
+            if (m_indexKind != kind)
+            {
+                m_indexKind = kind;
+                m_fallbackStop = null;
+                m_fallbackKind = TransportKind.None;
+                InvalidateStops();
+            }
+
+            // —— 控制点：公开 API，与工具共享同一份缓冲。读写前先收完它自己的 job。
+            NativeList<ControlPoint> cps;
+            try
+            {
+                cps = route.GetControlPoints(out var deps);
+                deps.Complete();
+            }
+            catch (Exception)
+            {
+                SettleDwell(false);
+                return;
+            }
+
+            TrackControlPointCount(cps);
+            ResolvePendingCommits(cps);
+
+            // —— 需求 2：落点 = 线路工具自己那个"还没按左键"的路径点
+            if (!TryCurrentPoint(cps, out ControlPoint hover))
+            {
+                ResetSettle(now);
+                SettleDwell(false);
+                RefreshStopsIfNeeded(now);
+                return;
+            }
+
+            // 需求 1（v0.10.0）：本帧的"光标真实点"只取一次（射线结果每帧读一次就够，需求 5），
+            // 之后静止判定、沿用判定、喂点全用它 —— 悬停点已经被吸到路中央，横向信息只剩在这儿。
+            float3 cursor = CursorGroundPos(hover.m_Position);
+
+            if (math.distance(cursor, m_lastPos) > kMoveEpsilon)
+            {
+                m_lastPos = cursor;
+                m_settledSince = now;
+                m_settled = false;
+                m_previewFailLogged = false;
+                m_previewAnnounced = false;
+                m_previewRefused = false;
+                m_previewEmptyLogged = false;
+                m_attachFailLogged = false;
+                m_nudgeIndex = 0;
+
+                // 需求 3（v0.10.0）：动了**不立刻**收幽灵。0.9.0 是"一动就 AddComponent<Deleted>"，
+                // 而幽灵要下一帧才被原版造出来、我们又要等 2 帧才去认领 —— 于是拖鼠标途中每次
+                // 微停（≥0.1s）都"喂一枚 → 立刻被自己删掉"，玩家看到的正是闪烁，日志里
+                // 204 次 `[预览无幽灵] 世界 Temp 数=0` 就是这么来的（Temp 从来没出现过）。
+                // 规矩改成：连续移动满 kPreviewFadeSeconds 才真收（幽灵本身仍然只留一枚）。
+                if (m_previewTemp != Entity.Null || m_previewFed)
+                {
+                    if (m_ghostMoveSince == 0f) m_ghostMoveSince = now;
+                    else if (now - m_ghostMoveSince >= kPreviewFadeSeconds)
+                    {
+                        RetirePreview();
+                        m_ghostMoveSince = 0f;
+                    }
+                }
+                else
+                {
+                    m_ghostMoveSince = 0f;
+                }
+            }
+            else
+            {
+                // 停回原处（或只是抖了一下）：上一枚幽灵还在就不欠收，把淡出计时清零。
+                m_ghostMoveSince = 0f;
+                if (!m_settled) m_settled = now - m_settledSince >= kSettleSeconds;
+            }
+
+            SettleDwell(m_settled);
+
+            // 预览"世上只留一枚、丢了才补"（MaintainPreview 里解释为什么不能每帧无条件喂）。
+            if (m_settled && !m_previewRefused) MaintainPreview(hover, cursor);
+
+            RefreshStopsIfNeeded(now);
+        }
+
+        /// <summary>
+        /// 控制点数量变化 = 玩家的事件流：
+        /// +1 = 左键加了停靠点（点击帧，原版已把它收进控制点）→ 排一个待提交；
+        /// -1 = 右键撤掉一个停靠点 → 先撤还没转正的待提交，再从已落地栈顶删一个；
+        /// -N(N≥2) = 线路完成（Clear 清空 + 补悬停点）→ 站台全部保留，账本清零。
+        /// 注意 Modify/Remove 态控制点恒为 1 个，不会误触任何分支。
+        /// </summary>
+        private void TrackControlPointCount(NativeList<ControlPoint> cps)
+        {
+            int n = cps.Length;
+            if (!m_haveCpCount)
+            {
+                m_haveCpCount = true;
+                m_lastCpCount = n;
+                return;
+            }
+            if (n == m_lastCpCount) return;
+
+            int delta = n - m_lastCpCount;
+            m_lastCpCount = n;
+
+            if (delta > 0)
+            {
+                // 点击帧：新提交点在 n-2（n-1 是新的悬停点）。n==1 只是首个悬停点，不是点击。
+                int idx = n - 2;
+                if (idx < 0 || idx >= n) return;
+                ControlPoint cp = cps[idx];
+                // 需求 1（v0.10.0）：左键这一笔也必须按"光标真实点"落地，否则预览在右、
+                // 点下去却去了左（控制点被工具的 SnapJob 吸到路中央，横向信息全丢了）。
+                float3 clickCursor = CursorGroundPos(cp.m_Position);
+                if (!TryGetStopPrefab(out PrefabBase pb, out Entity prefab))
+                {
+                    BusLineAutoStopsMod.log.Warn("[落点提交] 找不到可用站台资产，跳过");
+                    return;
+                }
+                Entity clickParent;
+                string clickWhy;
+
+                // 先试"沿用玩家看见的那一枚"（0.9.0 需求 3）：预览与落地必须是同一个东西，
+                // 而且世上同时有两枚同资产幽灵时，按位置找提交 Temp 会找错人。
+                // 距离两侧都用光标真实点（0.10.0）—— 拿停靠点比的话，宽路上"看见的那枚"
+                // 会因为隔着半条路而判成"不是同一处"，于是又喂一枚、落位的还不是玩家看的那枚。
+                Entity reuse = ReusablePreviewGhost(clickCursor, prefab);
+                if (reuse != Entity.Null)
+                {
+                    m_pending.Add(new PendingCommit
+                    {
+                        Position = cp.m_Position,
+                        FeedPos = m_previewSpot,
+                        Temp = reuse,
+                        Parent = m_previewParent,
+                        Prefab = prefab,
+                        WaitedFrames = 0,
+                    });
+                    m_previewTemp = Entity.Null;   // 这一枚交给提交管线，预览不再认它
+                    BusLineAutoStopsMod.log.Info("[落点提交] 沿用预览幽灵 @(" + Pos(m_previewSpot)
+                        + ") 停靠点=(" + Pos(cp.m_Position) + ")");
+                    return;
+                }
+
+                if (!TryResolveLanding(clickCursor, cp.m_OriginalEntity, out clickParent, out clickWhy))
+                {
+                    BusLineAutoStopsMod.log.Info("[落点提交] 跳过 @(" + Pos(clickCursor) + ") 原因：" + clickWhy);
+                    return;
+                }
+                // 没有可沿用的幽灵（静止没到 0.18s 就点、或刚换资产、或那一枚已经太远）
+                // → 自己现喂一枚。现喂之前必须先把手上那枚收走，否则世上同时两枚同资产幽灵，
+                // FindCommitTemp 会找错人（0.9.0 需求 1 的"只留一枚"在这条分支上是漏的）。
+                if (m_previewTemp != Entity.Null || m_previewFed) RetirePreview();
+                float3 feedPos = SlidePos(clickCursor, clickParent, Nudge());
+                // 提交定义必须在本帧就喂（与原版工具同一条通道；按 #67，本帧 ToolUpdate 之后的
+                // Modification1 就会把它造成 Temp），不带 Optional：下一帧查到校验错误就不转正。
+                FeedStopDefinition(prefab, feedPos, clickParent, optional: false);
+                m_pending.Add(new PendingCommit
+                {
+                    Position = cp.m_Position,
+                    FeedPos = feedPos,
+                    Temp = Entity.Null,
+                    Parent = clickParent,
+                    Prefab = prefab,
+                    WaitedFrames = 0,
+                });
+                return;
+            }
+
+            int removed = -delta;
+            if (removed >= 2)
+            {
+                // 线路完成：控制点被 Clear 后补悬停点。站台已经归线路用，全部保留。
+                if (m_placed.Count > 0 || m_pending.Count > 0)
+                {
+                    BusLineAutoStopsMod.log.Info("[线路完成] 本次落地的站台 " + m_placed.Count + " 个已保留");
+                }
+                m_placed.Clear();
+                m_pending.Clear();
+                return;
+            }
+
+            // 右键撤一个停靠点。
+            if (m_pending.Count > 0)
+            {
+                PendingCommit last = m_pending[m_pending.Count - 1];
+                m_pending.RemoveAt(m_pending.Count - 1);
+                // 那一笔用的是沿用的预览幽灵：撤单就把它还给预览；预览已经有别人了就收走它，
+                // 总之不给世上留一枚没人认领的幽灵。
+                if (last.Temp != Entity.Null && last.Temp != m_previewTemp)
+                {
+                    if (m_previewTemp == Entity.Null && IsTempAlive(last.Temp)) m_previewTemp = last.Temp;
+                    else RetireTemp(last.Temp);
+                }
+                return;
+            }
+            if (m_placed.Count > 0)
+            {
+                Entity e = m_placed[m_placed.Count - 1];
+                m_placed.RemoveAt(m_placed.Count - 1);
+                if (DeleteIfSafe(e))
+                {
+                    BusLineAutoStopsMod.log.Info("[撤点回退] 站台已删除（本次会话剩 " + m_placed.Count + " 个）");
+                }
+            }
+        }
+
+        /// <summary>下一帧：原版已按我们的定义造出提交 Temp → 查校验 → 转正 → 改写控制点依附。</summary>
+        private void ResolvePendingCommits(NativeList<ControlPoint> cps)
+        {
+            if (m_pending.Count == 0) return;
+
+            for (int i = m_pending.Count - 1; i >= 0; i--)
+            {
+                PendingCommit p = m_pending[i];
+
+                // 沿用预览幽灵的那一笔：实体就在手上，只需确认它还活着（原版可能已经把它收走）。
+                Entity temp = p.Temp;
+                if (temp != Entity.Null && !IsTempAlive(temp))
+                {
+                    BusLineAutoStopsMod.log.Info("[落点提交] @(" + Pos(p.Position)
+                        + ") 预览幽灵已被原版收走 → 改回现喂");
+                    p.Temp = Entity.Null;
+                    FeedStopDefinition(p.Prefab, p.FeedPos, p.Parent, optional: false);
+                    m_pending[i] = p;
+                    continue;
+                }
+                if (temp == Entity.Null) temp = FindCommitTemp(p);
+                if (temp == Entity.Null)
+                {
+                    if (++p.WaitedFrames > kCommitMaxWaitFrames)
+                    {
+                        BusLineAutoStopsMod.log.Warn("[落点提交] @(" + Pos(p.FeedPos) + ") 等不到原版生成，放弃"
+                            + "（世界 Temp 数=" + m_tempQuery.CalculateEntityCount() + "）");
+                        m_pending.RemoveAt(i);
+                    }
+                    else
+                    {
+                        m_pending[i] = p;
+                    }
+                    continue;
+                }
+
+                m_pending.RemoveAt(i);
+
+                if (EntityManager.HasComponent<Game.Tools.Error>(temp))
+                {
+                    // 原版校验不通过（Error 级；只有 Warning 级不在这儿，被灯/垃圾桶压住照样放）：
+                    // 不转正，由我们标记删除（v0.4.0 同款闸门，原版不给放的位置一律不放）。
+                    BusLineAutoStopsMod.log.Info("[放置被拒] @(" + Pos(p.FeedPos) + ")（原版校验不通过）");
+                    RetireTemp(temp);
+                    continue;
+                }
+
+                // 查重量在**吸附后的实际落位**上（悬停点在路中央，量它会隔着半条路误判成重复）。
+                float3 landedAt;
+                if (!TryEntityPos(temp, out landedAt)) landedAt = p.FeedPos;
+                float dupDist;
+                Entity dup = m_stops.Nearest(EntityManager, landedAt, kSnapDistance, out dupDist);
+                if (dup != Entity.Null)
+                {
+                    BusLineAutoStopsMod.log.Info("[放置被拒] @(" + Pos(landedAt) + ") 已有同类站台 "
+                        + Describe(dup) + " 相距 " + dupDist.ToString("0.0") + "m");
+                    RetireTemp(temp);
+                    continue;
+                }
+
+                if (ConvertTempToStop(temp))
+                {
+                    m_placed.Add(temp);
+                    float3 landed = landedAt;
+                    m_stops.Add(temp, landed);
+                    RewriteControlPointAttachment(cps, p.Position, temp, landed);
+                    // 需求 1 的实机取证：喂点与落点的有符号横向距离必须同号（同侧）。
+                    BusLineAutoStopsMod.log.Info("[落点提交] @(" + Pos(landed) + ") 资产已落地（本次第 "
+                        + m_placed.Count + " 个） 喂点横向=" + LateralText(p.Parent, p.FeedPos, EntityManager)
+                        + " 落点横向=" + LateralText(p.Parent, landed, EntityManager));
+                }
+            }
+        }
+
+        /// <summary>
+        /// 在 Temp 查询里找"同一资产 + 落点匹配"的那颗提交幽灵。
+        /// 量的是 <c>p.FeedPos</c>（我们喂下去的那一处，人行道侧），不是路中央的停靠点：
+        /// Large Road 上附着吸附会挪 8~9m，按停靠点量 6m 就永远"等不到原版生成"（需求 3 的根因）。
+        /// 已经被我们标 Deleted 的、以及还在当预览的那一枚都不算。
+        /// </summary>
+        private Entity FindCommitTemp(PendingCommit p)
+        {
+            // 需求 5：同 FindStopTemp —— 一颗 Temp 都没有时不必分配、也不必扫。
+            if (m_tempQuery.CalculateEntityCount() == 0) return Entity.Null;
+            try
+            {
+                NativeArray<Entity> all = m_tempQuery.ToEntityArray(Allocator.Temp);
+                try
+                {
+                    Entity best = Entity.Null;
+                    float bestDist = float.MaxValue;
+                    for (int i = 0; i < all.Length; i++)
+                    {
+                        Entity e = all[i];
+                        if (e == m_previewTemp) continue;
+                        if (EntityManager.HasComponent<Game.Common.Deleted>(e)) continue;
+                        // 需求 2（v0.10.0）：带 m_Original 的是原版的"复制/选中"副本，不是我们那一笔。
+                        if (EntityManager.GetComponentData<Temp>(e).m_Original != Entity.Null) continue;
+                        if (EntityManager.GetComponentData<PrefabRef>(e).m_Prefab != p.Prefab) continue;
+                        float3 pos = EntityManager.GetComponentData<Game.Objects.Transform>(e).m_Position;
+                        float d = math.distance(pos, p.FeedPos);
+                        if (d > kCommitMatchTolerance || d >= bestDist) continue;
+                        best = e;
+                        bestDist = d;
+                    }
+                    return best;
+                }
+                finally { all.Dispose(); }
+            }
+            catch (Exception)
+            {
+                return Entity.Null;
+            }
+        }
+
+        /// <summary>还能用/还能转正的 Temp：在世、带 Temp、没被我们标记删除。</summary>
+        private bool IsTempAlive(Entity e)
+        {
+            if (e == Entity.Null) return false;
+            try
+            {
+                return EntityManager.Exists(e) && EntityManager.HasComponent<Temp>(e)
+                    && !EntityManager.HasComponent<Game.Common.Deleted>(e);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 这枚 Temp 是不是**我们喂出来的那一种**。
+        ///
+        /// 需求 2（v0.10.0，实机 2026-10-08 16:10 会话 `[预览收回] 已有同类站台` 151 次的真因）：
+        /// 线路工具自己会把"悬停点依附上的那枚既有站台"**复制一份 Temp 出来**
+        /// （RouteToolSystem.cs:549 取 `m_ControlPoints[length-1].m_OriginalEntity` → :562-564
+        /// CreateTempWaypointObject → :788-789 写 `m_Original=那枚站台` + CreationFlags.Select），
+        /// 而 GenerateObjectsSystem.cs:967-969 会因此给**原件**挂 `Game.Tools.Hidden` 把它藏起来
+        /// （这就是玩家看到的"鼠标一停，老公交站消失了"：原件被原版藏了，而我们把原版那枚副本
+        /// 当成自己的幽灵 `AddComponent<Deleted>` 删了 → 两边都没了；再移上去原版又造副本 → 又出现）。
+        /// 我们喂的定义从来不写 m_Original（LazyModeSystem 只写 m_Prefab/m_Attached），
+        /// 所以 `Temp.m_Original == Entity.Null` 就是"这枚是我们的"的硬判据。
+        /// </summary>
+        private bool IsOurTemp(Entity e)
+        {
+            if (e == Entity.Null) return false;
+            try
+            {
+                if (!EntityManager.Exists(e)) return false;
+                if (!EntityManager.HasComponent<Temp>(e)) return false;
+                if (EntityManager.HasComponent<Game.Common.Deleted>(e)) return false;
+                return EntityManager.GetComponentData<Temp>(e).m_Original == Entity.Null;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 左键这一笔能不能直接用玩家看见的那枚幽灵：在世 + 同一个资产 + 离落点不太远。
+        /// 直接沿用 = 世上同时只有一枚同资产幽灵（不会找错人），也保证"看见哪儿就放在哪儿"。
+        /// </summary>
+        private Entity ReusablePreviewGhost(float3 clicked, Entity prefab)
+        {
+            Entity e = m_previewTemp;
+            if (e == Entity.Null || !m_hasPreviewSpot) return Entity.Null;
+            if (!IsOurTemp(e))
+            {
+                m_previewTemp = Entity.Null;
+                return Entity.Null;
+            }
+            try
+            {
+                if (EntityManager.GetComponentData<PrefabRef>(e).m_Prefab != prefab) return Entity.Null;
+            }
+            catch (Exception) { return Entity.Null; }
+            if (math.distance(m_previewSpot, clicked) > kPreviewReuseRadius) return Entity.Null;
+            return e;
+        }
+
+        /// <summary>
+        /// 收走我们那一枚预览幽灵（需求 1 的后半）：光标停住时原版写的是 applyMode=None、
+        /// 不写 Clear，玩家一移动鼠标就把旧幽灵丢在这儿不管 = 沿路拖出一串图标。
+        /// 移动/换资产/退出懒人模式都走这里，用的正是 ToolClearSystem 同款的一刀
+        /// （AddComponent&lt;Deleted&gt;，:88/:101）。
+        /// </summary>
+        private void RetirePreview()
+        {
+            Entity e = m_previewTemp;
+            m_previewTemp = Entity.Null;
+            m_previewFed = false;
+            m_previewWaitFrames = 0;
+            m_ghostMoveSince = 0f;
+            m_hasPreviewSpot = false;
+            m_previewParent = Entity.Null;
+            m_previewPrefab = Entity.Null;
+            RetireTemp(e);
+        }
+
+        /// <summary>
+        /// ToolClearSystem 同款收幽灵（AddComponent&lt;Deleted&gt;，:88/:101）。
+        ///
+        /// 需求 2（v0.10.0）的硬保险：带 `Temp.m_Original` 的是**原版的复制/选中副本**
+        /// （线路工具依附既有站台时自己造的，GenerateObjectsSystem.cs:967-969 因此把原件藏了），
+        /// 那种实体只能由原版自己清（SubObjectHiddenSystem 在没有任何活 Temp 指回去的那一帧自动解除 Hidden）。
+        /// 我们删它 = 原件被原版藏着、副本被我们删了 → 玩家眼里的"老公交站凭空消失"。
+        /// 所以这里就算被误传进来也拒绝动手，并留一行日志。
+        /// </summary>
+        private void RetireTemp(Entity e)
+        {
+            if (e == Entity.Null) return;
+            try
+            {
+                if (!EntityManager.Exists(e) || !EntityManager.HasComponent<Temp>(e)) return;
+                Entity original = EntityManager.GetComponentData<Temp>(e).m_Original;
+                if (original != Entity.Null)
+                {
+                    if (!m_foreignTempGuardLogged)
+                    {
+                        m_foreignTempGuardLogged = true;
+                        BusLineAutoStopsMod.log.Info("[幽灵拒删] " + Describe(e) + " 是原版的副本（原件="
+                            + Describe(original) + "）→ 交回原版自己清");
+                    }
+                    return;
+                }
+                EntityManager.AddComponent<Game.Common.Deleted>(e);
+            }
+            catch (Exception) { }
+        }
+
+        /// <summary>退出/重开一局时，把还没转正的待提交幽灵也一并收走（需求 7：不留挂账）。</summary>
+        private void RetirePendingTemps()
+        {
+            for (int i = 0; i < m_pending.Count; i++) RetireTemp(m_pending[i].Temp);
+        }
+
+        /// <summary>照抄 ApplyObjectsSystem 转正那一下（:922-923），只作用于我们自己的这一颗。</summary>
+        private bool ConvertTempToStop(Entity temp)
+        {
+            try
+            {
+                EntityManager.RemoveComponent<Temp>(temp);
+                EntityManager.RemoveComponent<Game.Tools.Animation>(temp);
+                EntityManager.RemoveComponent<Game.Buildings.BackSide>(temp);
+                EntityManager.AddComponent<Game.Common.Applied>(temp);
+                EntityManager.AddComponent<Game.Common.Created>(temp);
+                EntityManager.AddComponent<Game.Common.Updated>(temp);
+                return true;
+            }
+            catch (Exception e)
+            {
+                BusLineAutoStopsMod.log.Warn("[落点提交] 转正失败 " + e.GetType().Name);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 把"这一个停靠点"的依附改写成刚落地的站台：m_OriginalEntity=站台、m_Position=站台落位。
+        /// 线路完成时 GetWaypointDefinition 会把站台写进 WaypointDefinition.m_Connection（RouteToolSystem.cs:832），
+        /// 公交才会真正进站。SnapJob 只重吸最后一个控制点，已提交点不会被原版改回去。
+        /// </summary>
+        private void RewriteControlPointAttachment(NativeList<ControlPoint> cps, float3 clickedPos, Entity stop, float3 landed)
+        {
+            try
+            {
+                int best = -1;
+                float bestD = float.MaxValue;
+                for (int i = cps.Length - 2; i >= 0; i--)
+                {
+                    float d = math.distance(cps[i].m_Position, clickedPos);
+                    if (d >= bestD) continue;
+                    bestD = d;
+                    best = i;
+                    if (d < 0.6f) break;
+                }
+                if (best < 0)
+                {
+                    BusLineAutoStopsMod.log.Warn("[依附改写] 控制点里找不到这一笔（cps="
+                        + cps.Length + "）→ 停靠点留在路中，站台仍是真实建筑");
+                    return;
+                }
+                if (bestD > kCpMatchTolerance)
+                {
+                    BusLineAutoStopsMod.log.Warn("[依附改写] 最近的控制点差 " + bestD.ToString("0.0")
+                        + "m（超过 " + kCpMatchTolerance + "m）→ 停靠点留在路中");
+                    return;
+                }
+                ControlPoint c = cps[best];
+                c.m_OriginalEntity = stop;
+                c.m_Position = landed;
+                cps[best] = c;
+                BusLineAutoStopsMod.log.Info("[依附改写] cps[" + best + "] 距离 " + bestD.ToString("0.0")
+                    + "m → 依附=" + Describe(stop));
+            }
+            catch (Exception e)
+            {
+                BusLineAutoStopsMod.log.Warn("[落点提交] 依附改写失败（站台已建成，停靠点保持路中）" + e.GetType().Name);
+            }
+        }
+
+        // ── 预览（需求 2：静止后显示公交站预览） ────────────────────────────────
+        /// <summary>
+        /// 预览的"保持"逻辑。0.8.2 的教训（实机截图：一停就是一大排站台幽灵）：
+        /// **每帧无条件喂 = 每帧多一枚幽灵**。光标停住时线路工具写的是 `applyMode=None`
+        /// （RouteToolSystem.cs:2166），`ToolClearSystem` 那一帧根本不清 Temp，
+        /// 于是 60 枚/秒全留在世界里。原版幽灵之所以只有一枚，是因为工具每帧
+        /// 先 DestroyDefinitions 再重建（#66），而我们每次喂的都是新实体。
+        ///
+        /// 规矩：**世上一枚、丢了才补** ——
+        /// 我们那枚还活着就一帧都不喂（停回 2.5m 内算同一处，直接沿用 → 不闪）；
+        /// 喂出去之后**逐帧**去 Temp 里认领，最多 10 帧（0.9.0 只给 2 帧，
+        /// 卡一帧就误报"原版没造出幽灵"，实机 204 次）；认领到之后每帧只查它还在不在。
+        /// </summary>
+        private void MaintainPreview(ControlPoint hover, float3 cursor)
+        {
+            if (IsPreviewAlive())
+            {
+                // 沿用判据两侧都得是**光标真实点**：m_previewSpot 现在就是它算出来的，
+                // 拿被吸到路中央的 hover.m_Position 去比会凭空差上半条路宽，
+                // 于是"每帧收一枚再喂一枚"——正是 0.9.0 那个闪烁。
+                if (m_hasPreviewSpot && math.distance(m_previewSpot, cursor) <= kPreviewKeepRadius) return;
+                // 玩家挪到别处了：先收旧的一枚，再喂新的（世上仍然只有一枚）。
+                RetirePreview();
+            }
+
+            m_previewTemp = Entity.Null;
+            if (m_previewFed)
+            {
+                ClaimPendingPreview(hover, cursor);
+                return;
+            }
+
+            FeedPreview(hover, cursor);
+        }
+
+        /// <summary>解析落点并喂一枚预览定义（日志每个静止事件只打一次）。</summary>
+        /// <remarks>
+        /// 需求 5（v0.10.0）性能说明：解析不出来（没资产 / 射线什么都没打到）时这里**不喂定义**、
+        /// 也不置 m_previewFed，于是平稳帧里 MaintainPreview 每帧会重试一次。这条重试是有意的，
+        /// 成本只有：一次网格邻域查（3×3 桶）+ 两次射线单例读 + 一次资产解析（已缓存），
+        /// **零世界写入、零实体创建**；而"直接拒绝本静止事件"会让玩家必须挪一下鼠标才出预览。
+        /// 真正会堆东西的那两条路（每帧喂定义、每帧删幽灵）都已经被钉死了。
+        /// </remarks>
+        private void FeedPreview(ControlPoint hover, float3 cursor)
+        {
+            bool first = !m_previewFailLogged && !m_previewAnnounced;
+
+            // 需求 1（v0.10.0）：`cursor` 是本帧唯一一次射线读取的结果（OnUpdate 里算好传进来）。
+            // 从这一行起，本系统所有"在哪儿"的判据都用它，不再用被工具吸到路中央的悬停点
+            // （理由与 file:line 见 CursorGroundPos）。
+
+            if (!TryGetStopPrefab(out PrefabBase pb, out Entity prefab))
+            {
+                if (first)
+                {
+                    m_previewFailLogged = true;
+                    BusLineAutoStopsMod.log.Info("[预览跳过] @(" + Pos(cursor) + ") 原因：没有可用站台资产");
+                }
+                return;
+            }
+
+            Entity parent;
+            string why;
+            if (!TryResolveLanding(cursor, hover.m_OriginalEntity, out parent, out why))
+            {
+                if (first)
+                {
+                    m_previewFailLogged = true;
+                    BusLineAutoStopsMod.log.Info("[预览跳过] @(" + Pos(cursor) + ") 原因：" + why);
+                }
+                return;
+            }
+
+            // 喂点 = 光标真实点（+ 让位档）。这一处决定站台落在道路的哪一侧，见 CursorGroundPos 的取证。
+            float3 spot = SlidePos(cursor, parent, Nudge());
+            // 0.9.0 需求 2：预览不带 Optional。Optional 的原版行为是"只要有任何一条错误数据就
+            // Cancel+Hidden 这枚 Temp"（ValidationSystem.cs:1659-1681），连 Warning 级也cancel ——
+            // 玩家看到的"人行道有路灯/垃圾桶就不显示预览"就是这么来的（那条只是 Overlap 警告，
+            // 左键照样放得下，放下时原版自己把被占的物件删掉）。改成自控：只有 Error 级标记
+            // 才收走幽灵（见 IsPreviewAlive），警告级的留着，预览与可放性终于一致。
+            FeedStopDefinition(prefab, spot, parent, optional: false);
+            m_previewSpot = spot;
+            m_previewParent = parent;
+            m_previewPrefab = prefab;
+            m_hasPreviewSpot = true;
+            m_previewFed = true;
+            m_previewWaitFrames = 0;
+            if (m_previewAnnounced) return;
+
+            m_previewAnnounced = true;
+            BusLineAutoStopsMod.log.Info("[预览站台] @(" + Pos(cursor) + ") 资产="
+                + StationAssets.SafeName(pb) + " ← " + why
+                + " 光标横向=" + LateralText(parent, cursor, EntityManager)
+                + (Nudge() != 0f ? " 沿路让位" + Nudge().ToString("0.0") + "m" : "")
+                + " 索引=" + m_stops.Count);
+        }
+
+        /// <summary>当前这一档沿路让位量（米）。</summary>
+        private float Nudge()
+        {
+            if (m_nudgeIndex < 0) return 0f;
+            if (m_nudgeIndex >= kSlideNudges.Length) m_nudgeIndex = kSlideNudges.Length - 1;
+            return kSlideNudges[m_nudgeIndex];
+        }
+
+        /// <summary>
+        /// 某个点相对父级道路中线的**有符号横向距离**（米，正方向取 `MathUtils.Right(切向)`），
+        /// 只给日志用：父级是节点（交叉口）或没有 Curve 时返回 NaN，调用处写成"无中线"。
+        ///
+        /// 为什么用 MathUtils.Right 而不是自己写 (-z, x)：`MathUtils.Right(f) = (f.y, -f.x)`
+        /// （ilspycmd Colossal.Mathematics.MathUtils：2037-2040），而 SnapRouteLane 选车道用的
+        /// 就是这个向量（AttachPositionSystem.cs:236）—— 于是日志里的正负号和**原版判定的正负号
+        /// 是同一个轴**，"+7.4 / -8.1" 这种一行就能直接读出"我们的喂点和原版的落位不在同一侧"。
+        ///
+        /// 需求 1 的实机取证：`光标横向`（喂点）与 `落点横向`（吸附后的实际位置）必须同号。
+        /// </summary>
+        private static float LateralOf(Entity parent, float3 p, EntityManager em)
+        {
+            try
+            {
+                if (parent == Entity.Null || !em.Exists(parent)) return float.NaN;
+                Curve curve;
+                if (!em.TryGetComponent(parent, out curve)) return float.NaN;
+                float t;
+                MathUtils.Distance(curve.m_Bezier.xz, p.xz, out t);
+                float3 on = MathUtils.Position(curve.m_Bezier, t);
+                float2 right = MathUtils.Right(math.normalizesafe(MathUtils.Tangent(curve.m_Bezier, t).xz));
+                return math.dot(right, p.xz - on.xz);
+            }
+            catch (Exception)
+            {
+                return float.NaN;
+            }
+        }
+
+        private static string LateralText(Entity parent, float3 p, EntityManager em)
+        {
+            float v = LateralOf(parent, p, em);
+            return float.IsNaN(v) ? "无中线" : (v >= 0f ? "+" : "") + v.ToString("0.0") + "m";
+        }
+
+        /// <summary>
+        /// 沿**道路切向**把落点挪几米 —— 人行道那一寸被路灯/垃圾桶占住时，原版不给 Temp
+        /// （我们只看到"没造出幽灵"），沿路让一档就能出。
+        /// 0.10.0 需求 1：这一档从前是"横向"的，跨过中线就把站台让到马路对面去了
+        /// （正是玩家报的"鼠标在右、站台在左"），现在只沿路挪，永不换边。
+        /// 绝不动世界里的任何物件：鼠标一移开，原版 Clear 收走幽灵，障碍物一直都在原地。
+        /// </summary>
+        private float3 SlidePos(float3 basePos, Entity parent, float nudge)
+        {
+            if (nudge == 0f || parent == Entity.Null) return basePos;
+            try
+            {
+                Curve curve;
+                if (!EntityManager.TryGetComponent(parent, out curve)) return basePos;
+                float t;
+                MathUtils.Distance(curve.m_Bezier.xz, basePos.xz, out t);
+                float2 tan = MathUtils.Tangent(curve.m_Bezier, t).xz;
+                float len = math.lengthsq(tan);
+                if (len < 1e-6f) return basePos;
+                float2 dir = tan / math.sqrt(len);
+                return new float3(basePos.x + dir.x * nudge, basePos.y, basePos.z + dir.y * nudge);
+            }
+            catch (Exception)
+            {
+                return basePos;
+            }
+        }
+
+        /// <summary>
+        /// 逐帧认领上一枚喂出去的幽灵（按 #67 同帧 Modification1 出 Temp、Modification4 吸人行道），
+        /// 登记成"世上唯一那一枚"，并在这里做落位查重。
+        /// 0.10.0：0.9.0 只给固定 2 帧窗口，卡一帧（模拟负载、切后台）就误判"原版没造出幽灵"，
+        /// 实机一场 240 次里有 204 次报的是 `世界 Temp 数=0`（也就是根本没去认第二帧的账），
+        /// 玩家看到的就是"预览一闪一闪"。现在改成最多 <c>kClaimMaxFrames</c> 帧逐帧追。
+        /// </summary>
+        private void ClaimPendingPreview(ControlPoint hover, float3 cursor)
+        {
+            if (++m_previewWaitFrames > kClaimMaxFrames)
+            {
+                m_previewFed = false;
+                float3 giveUp = m_hasPreviewSpot ? m_previewSpot : cursor;
+                if (!m_previewEmptyLogged)
+                {
+                    m_previewEmptyLogged = true;
+                    BusLineAutoStopsMod.log.Info("[预览无幽灵] @(" + Pos(giveUp) + ") 等满 " + kClaimMaxFrames
+                        + " 帧原版也没按我们的定义造出 Temp（世界 Temp 数="
+                        + m_tempQuery.CalculateEntityCount() + "）");
+                }
+                // 这一寸根本没生成 → 沿路挪一档再试（最后一档还不成就停止本静止事件喂送）。
+                if (m_nudgeIndex < kSlideNudges.Length - 1)
+                {
+                    m_nudgeIndex++;
+                    BusLineAutoStopsMod.log.Info("[预览让位] 沿路 " + Nudge().ToString("0.0") + "m 再试 @("
+                        + Pos(cursor) + ")");
+                }
+                else
+                {
+                    m_previewRefused = true;
+                }
+                return;
+            }
+
+            float3 anchor = m_hasPreviewSpot ? m_previewSpot : cursor;
+            float dist;
+            Entity found = FindStopTemp(m_previewPrefab, anchor, out dist);
+            if (found == Entity.Null) return;   // 还没出来：下一帧接着认，别急着判"原版没造出"
+
+            m_previewFed = false;
+            m_previewTemp = found;
+
+            float3 landed;
+            if (!TryEntityPos(found, out landed)) landed = anchor;
+
+            // 原版判定不通过（Error 级标记）→ 这枚幽灵留着只会挡玩家左键，当场收回并停止本静止事件。
+            // Warning 级（被路灯/垃圾桶压住的那类）走不到这里：预览保留，左键照样放得下。
+            if (HasBlockingError(found))
+            {
+                m_previewRefused = true;
+                RetireTemp(found);
+                m_previewTemp = Entity.Null;
+                if (!m_previewFailLogged)
+                {
+                    m_previewFailLogged = true;
+                    BusLineAutoStopsMod.log.Info("[预览收回] @(" + Pos(landed) + ") 原版判定不通过（Error）→ 本静止事件不再显示");
+                }
+                return;
+            }
+
+            float dupDist;
+            Entity dup = m_stops.Nearest(EntityManager, landed, kSnapDistance, out dupDist);
+            if (dup != Entity.Null)
+            {
+                // 需求 5"该处已有站台就别显示"：量的是**吸附后的实际落位**，不是路中央的悬停点。
+                m_previewRefused = true;
+                RetireTemp(found);
+                m_previewTemp = Entity.Null;
+                BusLineAutoStopsMod.log.Info("[预览收回] @(" + Pos(landed) + ") 已有同类站台 "
+                    + Describe(dup) + " 相距 " + dupDist.ToString("0.0") + "m → 本静止事件不再显示");
+                return;
+            }
+
+            if (!m_previewAnnounced)
+            {
+                m_previewAnnounced = true;
+                BusLineAutoStopsMod.log.Info("[预览结果] 幽灵已出，离喂点 " + dist.ToString("0.0")
+                    + "m @(" + Pos(landed) + ")，判定="
+                    + (EntityManager.HasComponent<Game.Tools.Warning>(found) ? "Warning（可放，障碍物会被替换）" : "通过")
+                    + " 落点横向=" + LateralText(m_previewParent, landed, EntityManager)
+                    + " 父级=" + Describe(GetAttachedParent(found)) + " 索引=" + m_stops.Count);
+            }
+        }
+
+        /// <summary>原版给这枚 Temp 挂了 Error 级标记（Game.Tools.Error 与 Warning 是两个独立标记组件）。</summary>
+        private bool HasBlockingError(Entity e)
+        {
+            try { return EntityManager.HasComponent<Game.Tools.Error>(e); }
+            catch (Exception) { return false; }
+        }
+
+        /// <summary>
+        /// 我们那枚预览幽灵还在世吗（平稳帧只有几次组件读取，不做实体查询）。
+        /// 0.9.0：判在世之后还要看原版有没有给它挂 Error —— 挂了就立刻收回，
+        /// 免得这枚"放不下的幽灵"把玩家的左键一起挡掉（Optional 当年就是为这件事加的，
+        /// 代价是警告级也吞预览，见 FeedPreview）。
+        /// </summary>
+        private bool IsPreviewAlive()
+        {
+            Entity e = m_previewTemp;
+            if (!IsOurTemp(e))
+            {
+                // 不在了，或者已经不再是"我们的"那一枚（需求 2）：只脱手，不动手删。
+                m_previewTemp = Entity.Null;
+                return false;
+            }
+            if (!HasBlockingError(e)) return true;
+
+            RetireTemp(e);
+            m_previewTemp = Entity.Null;
+            m_previewRefused = true;
+            if (!m_previewFailLogged)
+            {
+                m_previewFailLogged = true;
+                BusLineAutoStopsMod.log.Info("[预览收回] 原版判定不通过（Error）@(" + Pos(m_previewSpot) + ")");
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// 在 Temp 查询里找我们那枚站台幽灵（同资产、水平最近），并把距离带出来。
+        /// 需求 5（v0.10.0）性能：认领改成逐帧之后，这里绝不能再每帧解析一次资产
+        /// （TryGetStopPrefab 要读选中资产的分类 + PrefabSystem 查询），所以父级直接把它喂进来过
+        /// 的那枚 prefab 传进来，本函数只做一次 Temp 查询。
+        /// </summary>
+        private Entity FindStopTemp(Entity prefab, float3 target, out float bestDist)
+        {
+            bestDist = float.MaxValue;
+            if (prefab == Entity.Null) return Entity.Null;
+            // 需求 5：世界一颗 Temp 都没有时直接不分配那颗 NativeArray。
+            // 实机 2026-10-08 16:10 会话里 `[预览无幽灵]` 240 次有 204 次报的就是"世界 Temp 数=0" ——
+            // 逐帧认领把这 10 帧的分配全做了一遍，纯属白干。
+            if (m_tempQuery.CalculateEntityCount() == 0) return Entity.Null;
+
+            Entity found = Entity.Null;
+            try
+            {
+                NativeArray<Entity> all = m_tempQuery.ToEntityArray(Allocator.Temp);
+                try
+                {
+                    for (int i = 0; i < all.Length; i++)
+                    {
+                        Entity e = all[i];
+                        if (EntityManager.HasComponent<Game.Common.Deleted>(e)) continue;   // 我们已收回的不认领
+                        // 需求 2：只认"我们自己喂出来的"Temp（Temp.m_Original==Null）。
+                        // 线路工具那枚"把既有站台复制一份"的 Temp 同资产、同位置，绝不能认领、更不能删。
+                        if (EntityManager.GetComponentData<Temp>(e).m_Original != Entity.Null) continue;
+                        if (EntityManager.GetComponentData<PrefabRef>(e).m_Prefab != prefab) continue;
+                        float3 t;
+                        if (!TryEntityPos(e, out t)) continue;
+                        float d = math.distance(new float2(t.x, t.z), new float2(target.x, target.z));
+                        if (d > kProbeTolerance || d >= bestDist) continue;
+                        bestDist = d;
+                        found = e;
+                    }
+                }
+                finally { all.Dispose(); }
+            }
+            catch (Exception)
+            {
+                return Entity.Null;
+            }
+            return found;
+        }
+
+        /// <summary>temp 幽灵身上的 Attached.m_Parent（调试用，拿不到就 Null）。</summary>
+        private Entity GetAttachedParent(Entity e)
+        {
+            try
+            {
+                Game.Objects.Attached a;
+                if (EntityManager.TryGetComponent(e, out a)) return a.m_Parent;
+            }
+            catch (Exception) { }
+            return Entity.Null;
+        }
+
+        /// <summary>
+        /// 走原版同一条定义通道喂一枚物件定义。Attach 让 GenerateObjectsSystem 写 Attached
+        /// （父级 = ResolveAttachParent 解析出的 Edge/Node），Modification4 的 AttachPositionSystem
+        /// 负责把它吸到人行道。
+        ///
+        /// 0.9.0 起预览与提交**都不带 Optional**：Optional 的代价是"任何一条错误数据（含 Overlap
+        /// 警告）都会把这枚 Temp 标 Cancel+Hidden"（ValidationSystem.cs:1659-1681），
+        /// 玩家看到的"人行道有路灯就不出预览"就是它；挡点击这件事改由 IsPreviewAlive 里
+        /// 逐帧检查 Error 级标记来做（只有真不给放才收走幽灵）。
+        /// </summary>
+        private void FeedStopDefinition(Entity prefab, float3 pos, Entity parent, bool optional = true)
+        {
+            try
+            {
+                EntityCommandBuffer ecb = m_OutputBarrier.CreateCommandBuffer();
+                Entity e = ecb.CreateEntity();
+
+                CreationDefinition cd = default(CreationDefinition);
+                cd.m_Prefab = prefab;
+                cd.m_Attached = parent;
+                cd.m_Flags = CreationFlags.Attach | (optional ? CreationFlags.Optional : 0);
+                cd.m_RandomSeed = UnityEngine.Random.Range(1, int.MaxValue);
+                ecb.AddComponent(e, cd);
+
+                ObjectDefinition od = default(ObjectDefinition);
+                od.m_Position = pos;
+                od.m_Rotation = RotationForParent(pos, parent, out int parentMesh, out float elevation);
+                od.m_ParentMesh = parentMesh;
+                od.m_Elevation = elevation;
+                od.m_Probability = 100;
+                od.m_PrefabSubIndex = -1;
+                od.m_Scale = 1f;
+                od.m_Intensity = 1f;
+                ecb.AddComponent(e, od);
+
+                ecb.AddComponent(e, default(Updated));
+            }
+            catch (Exception e2)
+            {
+                BusLineAutoStopsMod.log.Warn("[预览站台] 定义喂送失败 " + e2.GetType().Name);
+            }
+        }
+
+        /// <summary>旋转与标高照 ObjectToolBaseSystem 的规则：父级带 Curve 就贴路向，带 Net.Elevation 就补标高（#44）。</summary>
+        private quaternion RotationForParent(float3 pos, Entity parent, out int parentMesh, out float elevation)
+        {
+            parentMesh = -1;
+            elevation = 0f;
+            quaternion rot = quaternion.identity;
+            try
+            {
+                if (parent != Entity.Null)
+                {
+                    if (EntityManager.TryGetComponent<Curve>(parent, out Curve curve))
+                    {
+                        // MathUtils.Distance 返回距离值并带出最近点参数 t（FillCreationListJob 同款用法）
+                        MathUtils.Distance(curve.m_Bezier.xz, pos.xz, out float t);
+                        float3 tangent = MathUtils.Tangent(curve.m_Bezier, t);
+                        float yaw = math.atan2(tangent.x, tangent.z);
+                        rot = quaternion.RotateY(yaw);
+                    }
+                    if (EntityManager.TryGetComponent<Game.Net.Elevation>(parent, out Game.Net.Elevation elev))
+                    {
+                        parentMesh = 0;
+                        elevation = math.csum(elev.m_Elevation) * 0.5f;
+                    }
+                }
+            }
+            catch (Exception) { }
+            return rot;
+        }
+
+        /// <summary>
+        /// 落点判定（v0.8.1，替代 0.8.0 那个把所有悬停一律拒掉的 PlacementAllowed）。这里只做两件便宜的事：
+        /// 1) 光标基本压在已有同类站台上（3m 内）→ 不喂定义（需求 5"该处已有站台就别显示"的省事版前置；
+        ///    真正的 10m 查重量在预览幽灵**吸附后的实际落位**上，见 ClaimPendingPreview——
+        ///    悬停点在路中央，量它 10m 会把对面的站台算成重复，四车道以上就永远不放站）；
+        /// 2) 解析不出合法依附父级 → 不喂。
+        /// 0.8.0 还额外拒"父级带 Route/Waypoint/RouteWaypoint"——那是错的：线路工具的 SnapJob 会把
+        /// 悬停点吸到"正在画的那条线"的 temp 线路或既有线路上（RouteToolSystem.cs:183-191、:156-158），
+        /// m_OriginalEntity 于是变成线路实体，跟"能不能在路边放站台"毫无关系。父级改由
+        /// ResolveAttachParent 自己从射线命中物解析，不再拿工具的吸附上报当父级。
+        /// why 直接进日志，别再写死一句骗人的话。
+        /// </summary>
+        private bool TryResolveLanding(float3 pos, Entity toolParent, out Entity attach, out string why)
+        {
+            attach = Entity.Null;
+            why = "";
+            float nearDist;
+            try
+            {
+                // 悬停点就地查重只用小半径（3m）：真正的"这里已经有站了"判据放到
+                // 预览幽灵的**实际落位**上量（ClaimPendingPreview），隔着半条路不算重复。
+                Entity near = m_stops.Nearest(EntityManager, pos, kHoverSkipDistance, out nearDist);
+                if (near != Entity.Null)
+                {
+                    why = "光标就压在已有同类站台上（" + Describe(near) + " 距 "
+                        + nearDist.ToString("0.0") + "m）｜工具父级=" + Describe(toolParent)
+                        + "｜索引=" + m_stops.Count;
+                    return false;
+                }
+
+                string via;
+                attach = ResolveAttachParent(toolParent, out via);
+                if (attach == Entity.Null)
+                {
+                    why = "解析不到合法父级：工具父级=" + Describe(toolParent)
+                        + "｜射线命中=" + Describe(RaycastHitEntity())
+                        + "｜射线父级=" + Describe(RaycastOwner())
+                        + "｜索引=" + m_stops.Count;
+                    return false;
+                }
+                why = via;
+                return true;
+            }
+            catch (Exception e)
+            {
+                why = "判定异常 " + e.GetType().Name;
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 光标下的**真实世界点**（需求 1，v0.10.0 的核心一行）。
+        ///
+        /// 为什么不能用控制点：线路工具的 SnapJob 把悬停点吸到"正在画的那条线"的车行道上，
+        /// 并且 RouteToolSystem.cs:234-235 紧接着把 `m_HitPosition` 覆写成 `m_Position` ——
+        /// 于是控制点里只剩"路中央"，**横向信息只在射线结果里还活着**。
+        /// 而落位在哪一侧完完全全由喂下去的那个点决定（AttachPositionSystem.cs）：
+        ///   · SnapRouteLane :236-241 用 `dot(MathUtils.Right(tangent), 喂点 - 曲线点)` 选车道；
+        ///   · SnapSegmentAreas :284-333 用 `distancesq(人行道中线点, 喂点)` 选可建造区，
+        ///     `:205` 又按 `m_CurvePosition < 0.5` 只喂线段一半的区域。
+        /// 喂路中央 = 两侧等距 = 掷硬币，这正是玩家说的"鼠标在右边、原版路径点也在右边，
+        /// 站台却去了左边；四车道要很偏右才放右侧"。
+        ///
+        /// y 一律取悬停点的：射线打在灯杆/建筑上时那个 y 是物件表面高度，不是地面。
+        /// 只做一次结构体读取，且整段兜异常；射线不可信（没命中/飞点）就退回悬停点。
+        /// </summary>
+        private float3 CursorGroundPos(float3 fallback)
+        {
+            try
+            {
+                RaycastResult r;
+                if (!TryRaycast(out r)) return fallback;
+                float3 hit = r.m_Hit.m_HitPosition;
+                if (!float.IsFinite(hit.x) || !float.IsFinite(hit.z)) return fallback;
+                if (math.distance(hit.xz, fallback.xz) > kCursorMaxDrift) return fallback;
+                return new float3(hit.x, fallback.y, hit.z);
+            }
+            catch (Exception)
+            {
+                return fallback;
+            }
+        }
+
+        /// <summary>本帧活跃工具（线路工具）那次射线结果（读一次，三个取用者共用）。</summary>
+        private bool TryRaycast(out RaycastResult r)
+        {
+            r = default(RaycastResult);
+            try
+            {
+                if (m_ToolRaycast != null) return m_ToolRaycast.GetRaycastResult(out r);
+            }
+            catch (Exception) { }
+            return false;
+        }
+
+        /// <summary>
+        /// 这枚实体能不能当 Attached.m_Parent：AttachPositionSystem.FixAttachedPosition
+        /// 只有"带 Node"或"带 Composition（其 edge 要有 NetCompositionArea 缓冲）+ EdgeGeometry + Curve"
+        /// 才会正确吸附（AttachPositionSystem.cs:155-175，实机取证见开发笔记 #61 之后的探针行
+        /// `组件{Edge|Composition|SubLane[]|EdgeGeometry|Curve}`）。
+        /// </summary>
+        private bool IsAttachableParent(Entity e)
+        {
+            try
+            {
+                if (e == Entity.Null || !EntityManager.Exists(e)) return false;
+                if (EntityManager.HasComponent<Game.Net.Node>(e)) return true;
+
+                Game.Net.Composition comp;
+                if (!EntityManager.TryGetComponent(e, out comp)) return false;
+                if (!EntityManager.HasComponent<Game.Net.EdgeGeometry>(e)) return false;
+                if (!EntityManager.HasComponent<Game.Net.Curve>(e)) return false;
+
+                Entity edge = comp.m_Edge != Entity.Null ? comp.m_Edge : e;
+                if (!EntityManager.Exists(edge)) return false;
+                return EntityManager.HasBuffer<Game.Prefabs.NetCompositionArea>(edge);
+            }
+            catch (Exception ex)
+            {
+                // 这里静默 false 过一次就等于"这条路不放站"，必须留一行证据（每静止事件一次，不刷屏）。
+                if (!m_attachFailLogged)
+                {
+                    m_attachFailLogged = true;
+                    BusLineAutoStopsMod.log.Warn("[父级判定异常] " + ex.GetType().Name + "：" + ex.Message
+                        + " 实体=" + (e == Entity.Null ? "Null" : e.Index + ":" + e.Version));
+                }
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 父级解析顺序：工具给的 → 射线给的（父级/命中物）→ 命中物的 Owner 链（Lane→Edge 那类）。
+        /// via 带进日志，方便下次一眼看出是哪条路数通的。
+        /// </summary>
+        private Entity ResolveAttachParent(Entity toolParent, out string via)
+        {
+            via = "";
+            if (IsAttachableParent(toolParent))
+            {
+                via = "工具父级 " + Describe(toolParent);
+                return toolParent;
+            }
+
+            Entity owner = RaycastOwner();
+            if (IsAttachableParent(owner))
+            {
+                via = "射线父级 " + Describe(owner);
+                return owner;
+            }
+
+            Entity hit = RaycastHitEntity();
+            if (IsAttachableParent(hit))
+            {
+                via = "射线命中 " + Describe(hit);
+                return hit;
+            }
+
+            Entity e = hit;
+            for (int i = 1; i <= 3 && e != Entity.Null; i++)
+            {
+                Entity next = Entity.Null;
+                try
+                {
+                    Game.Common.Owner o;
+                    if (EntityManager.TryGetComponent(e, out o)) next = o.m_Owner;
+                }
+                catch (Exception) { next = Entity.Null; }
+                e = next;
+                if (IsAttachableParent(e))
+                {
+                    via = "命中物第 " + i + " 级父 " + Describe(e);
+                    return e;
+                }
+            }
+            return Entity.Null;
+        }
+
+        /// <summary>
+        /// 本帧活跃工具（线路工具）那次射线命中的实体。
+        /// Raycast 相位（SystemUpdatePhase 序号 30）在 ToolUpdate（18）之后，所以读到的是上一帧
+        /// Raycast 产出、也正是在用这一帧控制点的那份结果；写入早已在帧末收干，只做读且整段 try 包起来。
+        /// </summary>
+        private Entity RaycastHitEntity()
+        {
+            RaycastResult r;
+            return TryRaycast(out r) ? r.m_Hit.m_HitEntity : Entity.Null;
+        }
+
+        /// <summary>射线结果的 m_Owner（物件工具把它直接当控制点 m_OriginalEntity 用）。</summary>
+        private Entity RaycastOwner()
+        {
+            RaycastResult r;
+            return TryRaycast(out r) ? r.m_Owner : Entity.Null;
+        }
+
+        /// <summary>
+        /// 实体身份 + 组件构成，写成一行日志（排查"为什么没预览"全靠它）。
+        /// 实机教训（2026-10-07 23:02 会话）：整段包一个 try 的写法被一枚 `ArgumentException`
+        /// 一把否决，343 行日志全变成"描述失败ArgumentException"，最该看清的那几个实体反而没看清。
+        /// 所以每个组件单独判、单独兜异常，坏一个不影响其余，还能看见是哪个坏的。
+        /// </summary>
+        private string Describe(Entity e)
+        {
+            if (e == Entity.Null) return "Null";
+            try
+            {
+                if (!EntityManager.Exists(e)) return e.Index + ":" + e.Version + "(已不存在)";
+            }
+            catch (Exception ex)
+            {
+                return "Exists?" + ex.GetType().Name;
+            }
+
+            System.Text.StringBuilder sb = new System.Text.StringBuilder(96);
+            sb.Append(e.Index).Append(':').Append(e.Version).Append('{');
+            Flag<Game.Net.Node>(e, sb, "Node");
+            Flag<Game.Net.Composition>(e, sb, "Comp");
+            Flag<Game.Net.EdgeGeometry>(e, sb, "EdgeGeo");
+            Flag<Game.Net.Curve>(e, sb, "Curve");
+            Flag<Game.Net.Edge>(e, sb, "Edge");
+            Flag<Game.Net.Lane>(e, sb, "Lane");
+            Flag<Route>(e, sb, "Route");
+            Flag<Game.Routes.Waypoint>(e, sb, "Waypoint");
+            Flag<Game.Common.Owner>(e, sb, "Owner");
+            Flag<Temp>(e, sb, "Temp");
+            Flag<PrefabRef>(e, sb, "PrefabRef");
+            BufFlag<Game.Net.SubLane>(e, sb, "SubLane[]");
+            BufFlag<ConnectedRoute>(e, sb, "ConnRoute[]");
+            BufFlag<Game.Prefabs.NetCompositionArea>(e, sb, "CompArea[]");
+            sb.Append('}');
+            string extra = "";
+            try
+            {
+                PrefabRef pr = EntityManager.GetComponentData<PrefabRef>(e);
+                if (pr.m_Prefab != Entity.Null) extra = " 预制体=" + DescribePrefabName(pr.m_Prefab);
+            }
+            catch (Exception) { }
+            return sb.ToString() + extra;
+        }
+
+        /// <summary>资产名（拿得到 PrefabBase 就用真名，拿不到只报实体号）。</summary>
+        private string DescribePrefabName(Entity prefab)
+        {
+            try
+            {
+                if (m_PrefabSystem != null)
+                {
+                    PrefabBase pb = m_PrefabSystem.GetPrefab<PrefabBase>(prefab);
+                    if (pb != null) return StationAssets.SafeName(pb);
+                }
+            }
+            catch (Exception) { }
+            return prefab.Index + ":" + prefab.Version;
+        }
+
+        private void Flag<T>(Entity e, System.Text.StringBuilder sb, string name) where T : struct, IComponentData
+        {
+            try
+            {
+                if (EntityManager.HasComponent<T>(e)) sb.Append(name).Append('|');
+            }
+            catch (Exception ex)
+            {
+                sb.Append(name).Append('!').Append(ex.GetType().Name).Append('|');
+            }
+        }
+
+        private void BufFlag<T>(Entity e, System.Text.StringBuilder sb, string name) where T : struct, IBufferElementData
+        {
+            try
+            {
+                if (EntityManager.HasBuffer<T>(e)) sb.Append(name).Append('|');
+            }
+            catch (Exception ex)
+            {
+                sb.Append(name).Append('!').Append(ex.GetType().Name).Append('|');
+            }
+        }
+
+        /// <summary>预览/提交用哪颗站台资产：优先玩家选中的同类资产，否则按类别兜底（缓存，不刷日志）。</summary>
+        private bool TryGetStopPrefab(out PrefabBase pb, out Entity prefab)
+        {
+            prefab = Entity.Null;
+            pb = LazyModeState.SelectedStationPrefab;
+            TransportKind kind = LazyModeState.ModeKind;
+            TransportKind k;
+            if (pb == null || !StationAssets.TryClassifyStop(pb, out k) || k != kind)
+            {
+                if (m_fallbackStop == null || m_fallbackKind != kind)
+                {
+                    // 负缓存（kFallbackRetrySeconds）：上一轮已经判定"这一类没有可用站台资产"时，
+                    // 5 秒内不再整表重扫 —— FindFallbackStop 会把 PrefabSystem 的全部资产过一遍
+                    // 并逐条分类，资产多的存档一帧上万次读取。换资产/换类别/开新一场都会把
+                    // m_fallbackKind 清成 None，那时立刻重扫。
+                    float t = UnityEngine.Time.realtimeSinceStartup;
+                    bool blocked = m_fallbackScanFail == kind && t - m_fallbackScanAt < kFallbackRetrySeconds;
+                    if (!blocked)
+                    {
+                        m_fallbackStop = StationAssets.FindFallbackStop(kind);
+                        m_fallbackKind = kind;
+                        m_fallbackScanAt = t;
+                        m_fallbackScanFail = m_fallbackStop == null ? kind : TransportKind.None;
+                    }
+                }
+                pb = m_fallbackStop;
+            }
+            if (pb == null) return false;
+            prefab = StationAssets.PrefabEntity(pb);
+            return prefab != Entity.Null;
+        }
+
+        /// <summary>线路工具正在画哪一类线路（拿不到就 None，绝不因为识别失败影响功能）。</summary>
+        private TransportKind LineKindOf(RouteToolSystem route)
+        {
+            try { return StationAssets.TryClassifyLine(route.GetPrefab(), out TransportKind k) ? k : TransportKind.None; }
+            catch (Exception) { return TransportKind.None; }
+        }
+
+        private static string SafeToolName(ToolBaseSystem t)
+        {
+            try { return t == null ? "None" : t.GetType().Name; }
+            catch (Exception) { return "Unknown"; }
+        }
+
+        /// <summary>
+        /// 当前那个悬着的路径点。控制点依赖已在 OnUpdate 里 Complete；
+        /// 这里做"还没打到东西"防御（校正 #22：工具刚激活时控制点是 default，位置 (0,0,0)）。
+        /// </summary>
+        private static bool TryCurrentPoint(NativeList<ControlPoint> cps, out ControlPoint cp)
+        {
+            cp = default(ControlPoint);
+            if (cps.Length == 0) return false;
+            cp = cps[cps.Length - 1];
+            if (cp.Equals(default(ControlPoint))) return false;
+            return math.isfinite(cp.m_Position.x) && math.isfinite(cp.m_Position.z)
+                && math.any(cp.m_Position != float3.zero);
+        }
+
+        /// <summary>静止就绪状态给前端（懒人模式图标提示用）。</summary>
+        private void SettleDwell(bool ready)
+        {
+            if (LazyModeState.DwellReady == ready) return;
+            LazyModeState.DwellReady = ready;
+            LazyModeState.UiSeq++;
+        }
+
+        private void ResetSettle(float now)
+        {
+            ResetSettleTimers(now);
+            RetirePreview();
+        }
+
+        /// <summary>
+        /// 只归零计时与日志闸门，**不碰世界**。给"在系统帧之外被叫到"的入口用：
+        /// BeginSession 是快捷键回调 / UI 绑定回调里调的，那里不是做结构改动的地方
+        /// （本模组在 ExitLazyMode 里已经把这条规矩写死了：只挂请求，改动在系统帧里做）。
+        /// </summary>
+        private void ResetSettleTimers(float now)
+        {
+            m_settled = false;
+            m_settledSince = now;
+            m_lastPos = new float3(float.MaxValue, float.MaxValue, float.MaxValue);
+            m_previewFailLogged = false;
+            m_previewAnnounced = false;
+            m_previewRefused = false;
+            m_previewEmptyLogged = false;
+            m_attachFailLogged = false;
+            m_nudgeIndex = 0;
+        }
+
+        // ── 站台索引（需求 6：节流 + 增量） ──────────────────────────────────────
+        private void RefreshStopsIfNeeded(float now)
+        {
+            if (now < m_nextRefresh) return;
+            m_nextRefresh = now + (m_useFallback ? kFallbackRefreshSeconds : kRefreshSeconds);
+
+            if (!m_stopQueryVerified)
+            {
+                m_stopQueryVerified = true;
+                if (m_stopQuery.IsEmptyIgnoreFilter)
+                {
+                    m_useFallback = true;
+                    BusLineAutoStopsMod.log.Info("[索引] 站台标签查询为空 → 改用全物体路径（间隔 "
+                        + kFallbackRefreshSeconds + "s）");
+                }
+            }
+
+            try
+            {
+                if (!m_useFallback)
+                {
+                    NativeArray<Entity> all = m_stopQuery.ToEntityArray(Allocator.Temp);
+                    try
+                    {
+                        for (int i = 0; i < all.Length; i++) AddIndexEntity(all[i], m_indexKind);
+                    }
+                    finally { all.Dispose(); }
+                }
+                else
+                {
+                    NativeArray<Entity> all = m_objectQuery.ToEntityArray(Allocator.Temp);
+                    try
+                    {
+                        for (int i = 0; i < all.Length; i++) AddIndexEntity(all[i], m_indexKind);
+                    }
+                    finally { all.Dispose(); }
+                }
+            }
+            catch (Exception e)
+            {
+                BusLineAutoStopsMod.log.Warn("[索引] 重建失败：" + e.GetType().Name + " " + e.Message);
+            }
+        }
+
+        private void AddIndexEntity(Entity e, TransportKind want)
+        {
+            if (!EntityManager.Exists(e)) return;
+            TransportKind k;
+            if (!TryEntityKind(e, out k) || k != want) return;
+            float3 p;
+            if (!TryEntityPos(e, out p)) return;
+            m_stops.Add(e, p);
+        }
+
+        private bool TryEntityKind(Entity e, out TransportKind kind)
+        {
+            kind = TransportKind.None;
+            try
+            {
+                if (!EntityManager.HasComponent<PrefabRef>(e)) return false;
+                Entity prefab = EntityManager.GetComponentData<PrefabRef>(e).m_Prefab;
+                if (prefab == Entity.Null || !EntityManager.HasComponent<TransportStopData>(prefab)) return false;
+                kind = StationAssets.KindOfTransportType(
+                    EntityManager.GetComponentData<TransportStopData>(prefab).m_TransportType);
+                return kind != TransportKind.None;
+            }
+            catch (Exception) { return false; }
+        }
+
+        /// <summary>
+        /// 实体在世界里的落位。0.8.0 这里读的是 `Game.Routes.Position`——那是**路径点专用**组件
+        /// （GenerateWaypointsSystem.cs:445 只给 waypoint 实体写它），站台物体身上没有，
+        /// 于是索引整表为空、"10m 内已有同类站台"这条规则从 0.5.0 起一次都没生效过。
+        /// 改成物件的 `Game.Objects.Transform`（RouteToolSystem 自己的 SnapJob 也是读它，:356-358），
+        /// 再退回 `Game.Routes.Position` 兼容路径点形态的条目。
+        /// </summary>
+        private bool TryEntityPos(Entity e, out float3 pos)
+        {
+            pos = default(float3);
+            try
+            {
+                Game.Objects.Transform t;
+                if (EntityManager.TryGetComponent(e, out t))
+                {
+                    pos = t.m_Position;
+                    return math.isfinite(pos.x) && math.isfinite(pos.z);
+                }
+                Position p;
+                if (EntityManager.TryGetComponent(e, out p))
+                {
+                    pos = p.m_Position;
+                    return math.isfinite(pos.x) && math.isfinite(pos.z);
+                }
+            }
+            catch (Exception) { }
+            return false;
+        }
+
+        // ── 退出清理（需求 5：保留 / 不保留本次会话的站点） ──────────────────────
+        /// <summary>
+        /// 结构改动（AddComponent&lt;Deleted&gt;）之前必须先把还在跑的 job 收干净：
+        /// 我们这个槽紧挨在 ToolOutputSystem 之前，此刻原版线路/物件工具的 job 很可能还在飞行中，
+        /// 而"持有只读组件句柄期间改结构"正是空托管栈原生崩溃的典型来源（开发笔记 #63/#64）。
+        /// </summary>
+        private void FlushPendingJobs()
+        {
+            try { Dependency.Complete(); }
+            catch (Exception) { }
+            try
+            {
+                RouteToolSystem route = m_ToolSystem != null ? m_ToolSystem.activeTool as RouteToolSystem : null;
+                if (route != null)
+                {
+                    route.GetControlPoints(out var deps);
+                    deps.Complete();
+                }
+            }
+            catch (Exception) { }
+        }
+
+        private void RunExitCleanup(ExitDeletePolicy policy, float now)
+        {
+            SettleDwell(false);
+            ResetSettle(now);
+            FlushPendingJobs();
+
+            int deleted = 0, kept = 0;
+            bool doDelete = TransportKindRules.ShouldDeleteSessionStops(policy);
+            if (doDelete && m_placed.Count > 0)
+            {
+                // 需求 4（v0.10.0）：先把依附在这些自动站台上的末尾停靠点撤掉，再删站台，
+                // 否则路上只剩一枚孤零零的路径点标志（站台没了，停靠点还挂在原地）。
+                int cpRemoved = RemoveAttachedControlPoints();
+                if (cpRemoved > 0)
+                {
+                    BusLineAutoStopsMod.log.Info("[退出清理] 顺带撤掉 " + cpRemoved
+                        + " 个依附在自动站台上的停靠点（遇到不是自动放置的就停手）");
+                }
+                for (int i = 0; i < m_placed.Count; i++)
+                {
+                    if (DeleteIfSafe(m_placed[i])) deleted++;
+                    else kept++;
+                }
+            }
+            else
+            {
+                kept = m_placed.Count;
+            }
+
+            if (m_placed.Count > 0)
+            {
+                BusLineAutoStopsMod.log.Info("[懒人模式] 退出 policy=" + policy
+                    + " 本次会话站点=" + (deleted + kept) + " 删除=" + deleted + " 保留=" + kept);
+            }
+            m_placed.Clear();
+            RetirePendingTemps();
+            m_pending.Clear();
+            m_haveCpCount = false;
+            InvalidateStops();
+            LazyModeState.ResetSessionCounters();
+        }
+
+        /// <summary>
+        /// 需求 4（v0.10.0）：撤掉"依附在本次会话自动站台上"的**末尾**停靠点，
+        /// 从最后一个已提交点往前删，遇到第一个不是我们放的（或没依附的）就停手。
+        /// 只在当前这条还在画的线上做：别的线路、已经完成的线路、玩家自己放的站台一律不碰。
+        ///
+        /// 证据与限制（开发笔记 #88，全部 file:line 级）：
+        /// · 原版自己撤点是**私有** Cancel（RouteToolSystem.cs:1777-1833：RemoveAtSwapBack 掉悬停槽、
+        ///   applyMode=Clear、用新射线回填最后一槽、UpdateDefinitions），模组够不着；
+        ///   公开面上只有 :1345 `GetControlPoints(out deps)` 交出来的同一份缓冲，没有 TryRemoveNode
+        ///   这类 API（RemoveWaypoint 只是枚举/动作名 :52/:984）。
+        /// · 所以只能在 `state == Create` 时自己 RemoveAt，并且三条硬约束：
+        ///   ① 从 Length-2 起、绝不动 Length-1（那是悬停位）；
+        ///   ② 剩到 3 个就收手（:1190/:1957 直接取 Length-2/Length-1，越少越界）；
+        ///   ③ 先删控制点、再删站台 —— 删站台这件事本身会让原版置 forceUpdate
+        ///   （ToolBaseSystem.cs:565 m_OriginalDeletedSystem），下一帧它按新的控制点列表
+        ///   自己重建预览线路，我们不需要、也不该去碰它的私有定义管线。
+        /// 依附关系就在 `ControlPoint.m_OriginalEntity`（:20）：我们改写依附时写的正是它（#83），
+        /// 而线路完成时原版也是拿它去连站台（:839-841），所以这个判据和原版的口径一致。
+        /// </summary>
+        private int RemoveAttachedControlPoints()
+        {
+            try
+            {
+                RouteToolSystem route = m_ToolSystem != null ? m_ToolSystem.activeTool as RouteToolSystem : null;
+                if (route == null) return 0;
+                if (route.state != RouteToolSystem.State.Create) return 0;
+
+                NativeList<ControlPoint> cps = route.GetControlPoints(out var deps);
+                deps.Complete();
+
+                int removed = 0;
+                for (int i = cps.Length - 2; i >= 1; i--)
+                {
+                    if (cps.Length <= 3) break;
+                    Entity owner = cps[i].m_OriginalEntity;
+                    if (owner == Entity.Null || !IsSessionStop(owner)) break;
+                    cps.RemoveAt(i);
+                    removed++;
+                }
+                return removed;
+            }
+            catch (Exception e)
+            {
+                BusLineAutoStopsMod.log.Warn("[退出清理] 撤停靠点失败（站台照常处理）" + e.GetType().Name);
+                return 0;
+            }
+        }
+
+        /// <summary>这个实体是不是本次会话由模组自动落地、并且即将被删的站台。</summary>
+        private bool IsSessionStop(Entity e)
+        {
+            for (int i = 0; i < m_placed.Count; i++) if (m_placed[i] == e) return true;
+            return false;
+        }
+
+        /// <summary>还挂着活路径点的站点不删（原版线路在用，删了会把别人的线弄断）。</summary>
+        private bool DeleteIfSafe(Entity e)
+        {
+            try
+            {
+                if (!EntityManager.Exists(e)) return false;
+                if (EntityManager.HasComponent<ConnectedRoute>(e))
+                {
+                    DynamicBuffer<ConnectedRoute> buf = EntityManager.GetBuffer<ConnectedRoute>(e);
+                    for (int i = 0; i < buf.Length; i++)
+                    {
+                        if (EntityManager.Exists(buf[i].m_Waypoint)) return false;
+                    }
+                }
+                EntityManager.AddComponent<Game.Common.Deleted>(e);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                BusLineAutoStopsMod.log.Warn("[退出清理] 删除失败 " + ex.GetType().Name + " " + ex.Message);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 进入懒人模式时重置本会话状态。**这里一行世界代码都不写**：
+        /// 本方法是被 `BusLineAutoStopsMod.OnToggleLazy` 叫的，而那两个调用点
+        /// （快捷键 `ProxyAction.onInteraction` 回调、UI 绑定 CallToggle 回调）都在工具级联之外，
+        /// 而收幽灵用的 `AddComponent&lt;Game.Common.Deleted&gt;` 是**结构改动** ——
+        /// 原版自己也是在这个回调里只转发事件、不动世界（`ToolBaseSystem.cs:384-392`）。
+        /// 本模组的退出路径早就按这条规矩写了（`ExitLazyMode` 只挂 `PendingExitCleanup`，
+        /// 真正的删除在 OnUpdate 里 `RunExitCleanup`），进入路径以前偷偷在回调里删实体，是同一个
+        /// 崩溃类（"持有句柄期间改结构"= 空托管栈原生崩溃）的隐患，现在改成排队。
+        /// 见 开发笔记「v0.10.0 安全自查（BlueprintHub 崩溃交接对照）」一节（不改版本号，等玩家定）。
+        /// </summary>
+        public static void BeginSession()
+        {
+            LazyModeState.ResetSessionCounters();
+            LazyModeSystem s = Instance;
+            if (s == null || s.m_destroyed) return;
+            s.m_placed.Clear();
+            s.m_pending.Clear();
+            s.m_haveCpCount = false;
+            s.m_fallbackStop = null;
+            s.m_fallbackKind = TransportKind.None;
+            s.m_fallbackScanAt = -999f;   // 见 kFallbackRetrySeconds：允许下一帧就重新扫一次
+            s.m_fallbackScanFail = TransportKind.None;
+            s.ResetSettleTimers(UnityEngine.Time.realtimeSinceStartup);
+            s.SettleDwell(false);
+            s.InvalidateStops();
+            // 上一场可能留下的"还没转正的提交幽灵 / 手上那枚预览幽灵"由下一帧的系统帧去收
+            // （OnUpdate 里先 FlushPendingJobs 再 RetirePendingTemps/RetirePreview）。
+            s.m_beginCleanupPending = true;
+        }
+
+        private static string Pos(float3 p)
+        {
+            return p.x.ToString("0.0") + "," + p.y.ToString("0.0") + "," + p.z.ToString("0.0");
+        }
+    }
+}

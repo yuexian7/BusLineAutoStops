@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <!-- 不写在 <g> 上：Cohtml 的 SVG 光栅化对「组属性继承」没有实测过，
+       形状各自带 fill 最保险（原版 UI 的 svg 也是逐形状给色）。 -->
+  <rect x="7" y="5" width="30" height="5" fill="#ffffff" />
+  <rect x="8" y="10" width="4" height="17" fill="#ffffff" />
+  <rect x="32" y="10" width="4" height="17" fill="#ffffff" />
+  <rect x="3" y="33" width="42" height="4" fill="#ffffff" />
+  <circle cx="8" cy="35" r="6" fill="#ffffff" />
+  <circle cx="24" cy="35" r="6" fill="#ffffff" />
+  <circle cx="40" cy="35" r="6" fill="#ffffff" />
+</svg>

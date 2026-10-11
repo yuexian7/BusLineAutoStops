@@ -18,50 +18,48 @@ namespace BusLineAutoStops.Tests
 
         public static int Main()
         {
-            // 类型支持范围
+            // 类型支持范围（v0.5.0：公交 + 有轨电车）
             Check(TransportKindRules.IsLazyModeSupported(TransportKind.Bus), "bus supported");
-            Check(!TransportKindRules.IsLazyModeSupported(TransportKind.Tram), "tram not yet");
+            Check(TransportKindRules.IsLazyModeSupported(TransportKind.Tram), "tram supported");
             Check(!TransportKindRules.IsLazyModeSupported(TransportKind.None), "none not supported");
+            Check(!TransportKindRules.IsLazyModeSupported(TransportKind.Train), "train not supported");
+            Check(!TransportKindRules.IsLazyModeSupported(TransportKind.Subway), "subway not supported");
+            Check(!TransportKindRules.IsLazyModeSupported(TransportKind.Ship), "ship not supported");
+            Check(!TransportKindRules.IsLazyModeSupported(TransportKind.Airplane), "airplane not supported");
 
-            Check(TransportKindRules.CanSelectDuringLazy(TransportKind.Bus, TransportKind.Bus), "same bus ok");
-            Check(!TransportKindRules.CanSelectDuringLazy(TransportKind.Bus, TransportKind.Tram), "cross kind blocked");
-            Check(!TransportKindRules.CanSelectDuringLazy(TransportKind.None, TransportKind.Bus), "no mode");
+            // v0.6.0 需求 3：懒人模式不再绑定"当前线路工具的类别"，玩家点哪类站台资产就用哪类。
+            // v0.9.0 需求 4：电车那一类从懒人模式里剥出来了 —— 分类仍然认得电车站（上面那组不变），
+            // 但"能不能拿它跑懒人模式 / 能不能选它换类别"改由 IsLazyModeEnabled(…, tramEnabled) 说话。
+            Check(TransportKindRules.IsLazyModeEnabled(TransportKind.Bus, false), "bus enabled even with tram off");
+            Check(!TransportKindRules.IsLazyModeEnabled(TransportKind.Tram, false), "tram gated off in 0.9.0");
+            Check(TransportKindRules.IsLazyModeEnabled(TransportKind.Tram, true), "tram enables again when the option opens");
+            Check(!TransportKindRules.IsLazyModeEnabled(TransportKind.Train, true), "train never enabled");
+            Check(!TransportKindRules.IsLazyModeEnabled(TransportKind.None, true), "none never enabled");
+
+            Check(TransportKindRules.IsSelectableDuringLazy(TransportKind.Bus, false), "bus asset selectable");
+            Check(!TransportKindRules.IsSelectableDuringLazy(TransportKind.Tram, false), "tram not selectable while gated");
+            Check(TransportKindRules.IsSelectableDuringLazy(TransportKind.Tram, true), "tram selectable when opened");
+            Check(!TransportKindRules.IsSelectableDuringLazy(TransportKind.None, true), "none not selectable");
+            Check(!TransportKindRules.IsSelectableDuringLazy(TransportKind.Train, true), "train asset not selectable");
+            Check(!TransportKindRules.IsSelectableDuringLazy(TransportKind.Subway, true), "subway not selectable");
+            Check(!TransportKindRules.IsSelectableDuringLazy(TransportKind.Airplane, true), "airplane not selectable");
 
             Check(TransportKindRules.BlocksNewStation(TransportKind.Bus, TransportKind.Bus), "bus blocks bus");
             Check(!TransportKindRules.BlocksNewStation(TransportKind.Bus, TransportKind.Tram), "tram not block bus");
             Check(!TransportKindRules.BlocksNewStation(TransportKind.Bus, TransportKind.None), "none not block");
+            Check(TransportKindRules.BlocksNewStation(TransportKind.Tram, TransportKind.Tram), "tram blocks tram");
+            Check(!TransportKindRules.BlocksNewStation(TransportKind.Tram, TransportKind.Bus), "bus not block tram");
 
-            // 删除策略
-            var n = TransportKindRules.ResolveExitDelete(ExitDeletePolicy.DoNothing);
-            Check(!n.DeleteStops && !n.DeleteStations, "policy nothing");
-            var a = TransportKindRules.ResolveExitDelete(ExitDeletePolicy.DeleteStopsAndStations);
-            Check(a.DeleteStops && a.DeleteStations, "policy all");
-            var st = TransportKindRules.ResolveExitDelete(ExitDeletePolicy.DeleteStationsOnly);
-            Check(!st.DeleteStops && st.DeleteStations, "policy stations");
-            var sp = TransportKindRules.ResolveExitDelete(ExitDeletePolicy.DeleteStopsOnly);
-            Check(sp.DeleteStops && !sp.DeleteStations, "policy stops");
+            // 需求 5：退出策略只剩两项，且只有"删本次自动落地的站台"这一种删除，绝不删停靠点。
+            Check(!TransportKindRules.ShouldDeleteSessionStops(ExitDeletePolicy.KeepStops), "keep default");
+            Check(TransportKindRules.ShouldDeleteSessionStops(ExitDeletePolicy.DeleteSessionStops), "delete session stops");
+            Check((int)ExitDeletePolicy.KeepStops == 0, "keep is 0（老存档里的 0 仍然读作保留）");
+            Check((int)ExitDeletePolicy.DeleteSessionStops == 1, "delete is 1");
+            Check(System.Enum.GetValues(typeof(ExitDeletePolicy)).Length == 2, "下拉只有 2 项");
 
-            // 账本
-            var ledger = new PlacedStopLedger();
-            ledger.Track("s1", "p1", TransportKind.Bus, true);
-            ledger.Track("s2", "p2", TransportKind.Bus, false); // 预存站台关联，非本模组生成
-            Check(ledger.Count == 2, "ledger count");
-            Check(ledger.ShouldDeleteStationWithStop("s1"), "byThisMod delete");
-            Check(!ledger.ShouldDeleteStationWithStop("s2"), "not byThisMod keep");
-            Check(!ledger.ShouldDeleteStationWithStop("missing"), "missing no delete");
-            Check(ledger.GetStationKey("s1") == "p1", "station key");
 
-            var stops = new List<string>();
-            var stations = new List<string>();
-            ledger.CollectExitDeletes(ExitDeletePolicy.DeleteStopsAndStations, stops, stations);
-            Check(stops.Count == 1 && stations.Count == 1, "exit collect only byThisMod");
-
-            stops.Clear(); stations.Clear();
-            ledger.CollectExitDeletes(ExitDeletePolicy.DoNothing, stops, stations);
-            Check(stops.Count == 0 && stations.Count == 0, "exit nothing");
-
-            Check(ledger.Remove("s1"), "remove");
-            Check(!ledger.ShouldDeleteStationWithStop("s1"), "removed");
+            // v0.6.0 删掉了账本（PlacedStopLedger）：不再"给站台补缓冲 / 事后回填停靠点"，
+            // 站台与线路的关系完全交回原版，所以这里没有账本可测了。
 
             // ===== BLG key 形状（BridgeTheLanguageGap Scope）=====
             const string inst = "BusLineAutoStops.BusLineAutoStops.BusLineAutoStopsMod";
@@ -78,10 +76,10 @@ namespace BusLineAutoStops.Tests
             Check(ak.StartsWith("Common.ACTION[", System.StringComparison.Ordinal), "action key prefix");
             Check(BlgKeys.WouldClassifyAsModOptions(ak, inst), "action as ModOptions");
 
-            string ek = BlgKeys.EnumKey("ExitDeletePolicy", "DoNothing");
+            string ek = BlgKeys.EnumKey("ExitDeletePolicy", "KeepStops");
             Check(ek.StartsWith("Options." + inst + ".ExitDeletePolicy[", System.StringComparison.Ordinal),
                   "enum key shape");
-            // 实测/推演：枚举成员 key 的 [] 内只有成员名（DoNothing），
+            // 实测/推演：枚举成员 key 的 [] 内只有成员名（KeepStops），
             // BLG ExtractIdentifier 拿不到 setting.id ⇒ 归 GameCore，不是 ModOptions。
             // 下拉文案仍经 Translate（可被 BLG 的「游戏本体」范围翻译）。
             Check(!BlgKeys.WouldClassifyAsModOptions(ek, inst), "enum member is GameCore not ModOptions");
