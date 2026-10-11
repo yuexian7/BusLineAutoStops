@@ -38,7 +38,10 @@ namespace BusLineAutoStops
 
         public const string kSettingId = "BusLineAutoStops.BusLineAutoStops.BusLineAutoStopsMod";
 
-        public const string kVersion = "0.10.0";
+        // 版本五处统一（Mod.cs kVersion / Setting.kVersion / Frontend mod.json /
+        // PublishConfiguration.xml / releases 快照）：0.10.0 时这里曾落后两版，
+        // 玩家在设置页看到错版本号、报日志误判——pack-release 的版本钉子已把本文件纳入
+        public const string kVersion = "0.11.1";
         public const string kAuthor = "yuexian";
 
         public const string kKoFiUrl = "https://ko-fi.com/yuexian7";

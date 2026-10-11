@@ -28,6 +28,8 @@ node scripts/deploy-local.js
 # → F:\SteamLibrary\steamapps\common\Cities Skylines II\Cities Skylines II\Mods\BusLineAutoStops\
 ```
 
+官方工具链 `dotnet build` 已修复可用（0 警告 0 错误），适合 IDE 打开与编译校验；发布打包仍以 `scripts/pack-release.js` 为准。构建命令、版本五处统一表与现役脚本清单见 `ARCHITECTURE.md`。
+
 离线纯逻辑测试：
 
 ```powershell
@@ -42,10 +44,17 @@ node tests/t3/build-run.js
 - `Systems/UiCommandSystem.cs` — UI 绑定与资产选择拦截
 - `AssetFilterService.cs` / `StationAssets.cs` / `Systems/StopIndex.cs` — 面板过滤与站台索引
 - `Frontend/` — GameTopLeft 按钮 + ItemGrid 过滤/拦截
-- `开发笔记.md` — 逐版需求、机制取证（file:line）与实机验证清单
+- `ARCHITECTURE.md` — 现行机制速览、四条硬不变量、构建命令与已知待办
+- `docs/history/开发笔记-v0.1.1~v0.11.1.md` — 已冻结的逐版需求、机制取证（file:line）与实机验证清单
 
 ## 兼容性
 
 - 零 Harmony 补丁、零自定义 ECS 组件；卸载后读档不脏存档
 - 关闭懒人模式后不干预原版行为
 - 本期支持公交与有轨电车；火车/地铁/机场/码头是车站体系，架构预留
+
+## Bridge the Language Gap（BLG）兼容
+
+- BLG 只 Hook `UILocalizationManager.Translate`。TrafficToolEssentials 的游戏内面板用 TS 词典直出、不经过该出口，所以 BLG 翻不动它——那是 TTE 的上游问题，本模组不去改 BLG 也不改 TTE。
+- 本模组全部文案都走 `Translate`，保证 BLG 能翻：面板字挂 `ModOptions` scope（key 以 setting.id 为前缀），选项行标题/说明走框架 `GetOptionLabel/DescLocaleID`，下拉枚举成员走 `GetEnumValueLocaleID`（`Options.<id>.EXITDELETEPOLICY[成员]`，归 `GameCore` scope）。前端硬编码 TS 词典是被禁止的路径——那正是 TTE 翻不动的根因。
+- 判定逻辑与 BLG 的 `Scope.ExtractIdentifier` / `IsModIdentifier` 同形，见 `BlgKeys.cs`。

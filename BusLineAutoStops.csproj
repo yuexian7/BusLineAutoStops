@@ -11,25 +11,17 @@
 
 	<ItemGroup>
 		<PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
-		<PackageReference Include="Lib.Harmony" Version="2.2.2" />
 	</ItemGroup>
 
-	<ItemGroup>
-		<PackageDownload Include="Lib.Harmony" Version="[2.3.3]" />
-	</ItemGroup>
-
-	<PropertyGroup>
-		<HarmonyRuntimePackageDir>$(NuGetPackageRoot)lib.harmony\2.3.3\</HarmonyRuntimePackageDir>
-		<HarmonyRuntimeDll>$(HarmonyRuntimePackageDir)lib\net48\0Harmony.dll</HarmonyRuntimeDll>
-	</PropertyGroup>
-
+	<!--
+	  本模组零 Harmony 补丁（喂 CreationDefinition 的原版工具管线路线），不引用 Lib.Harmony。
+	  发布打包与部署的事实标准是 scripts\pack-release.js / deploy-local.js（内含 130+ 枚钉子自检）；
+	  dotnet build 走官方工具链（CSII_TOOLPATH），用于 IDE 与编译校验（scripts\compile-check.js 同口径）。
+	-->
 	<Target Name="RunModPostProcessor" AfterTargets="AfterBuild" BeforeTargets="DeployWIP" Condition="'$(NeedBuild)'">
 		<Error Condition="!Exists('$(ModPostProcessorFullPath)')" Text="Post processor not found: $(ModPostProcessorFullPath)" />
 		<Message Text="Run post processor: $(ModPostProcessorArgs)" Importance="high" />
 		<Exec Command="$(ModPostProcessorArgs)" EnvironmentVariables="DOTNET_ROLL_FORWARD=Major" LogStandardErrorAsError="true" />
-		<Error Condition="!Exists('$(HarmonyRuntimeDll)')" Text="Missing 0Harmony 2.3.3 at $(HarmonyRuntimeDll). Run: dotnet restore" />
-		<Copy SourceFiles="$(HarmonyRuntimeDll)" DestinationFolder="$(OutDir)" OverwriteReadOnlyFiles="true" SkipUnchangedFiles="false" />
-		<Message Text="SwapHarmonyRuntime: $(OutDir)0Harmony.dll -> 2.3.3" Importance="high" />
 	</Target>
 
 	<Target Name="RunModPublisher" AfterTargets="Publish">
@@ -59,6 +51,7 @@
 		<Reference Include="Colossal.IO.AssetDatabase"><Private>false</Private></Reference>
 		<Reference Include="Colossal.Localization"><Private>false</Private></Reference>
 		<Reference Include="Colossal.UI"><Private>false</Private></Reference>
+		<Reference Include="Colossal.UI.Binding"><Private>false</Private></Reference>
 		<Reference Include="UnityEngine.CoreModule"><Private>false</Private></Reference>
 		<Reference Include="Unity.InputSystem"><Private>false</Private></Reference>
 		<Reference Include="Unity.Burst"><Private>false</Private></Reference>

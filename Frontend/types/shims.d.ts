@@ -20,13 +20,6 @@ declare module "cs2/api" {
   export function call<T>(group: string, name: string, arg?: unknown): Promise<T>;
 }
 
-declare module "cs2/api" {
-  export function bindValue<T>(group: string, name: string, initial: T): unknown;
-  export function useValue<T>(binding: unknown): T;
-  export function trigger(group: string, name: string, arg?: unknown): void;
-  export function call<T>(group: string, name: string, arg?: unknown): Promise<T>;
-}
-
 declare module "cs2/l10n" {
   export function useLocalization(): { [key: string]: string };
   export const Localized: React.ComponentType<{ id: string }>;
@@ -50,9 +43,6 @@ declare module "cs2/l10n" {
 //   .icon_be5{width:100%;height:100%;--iconColor:rgb(250,250,250)} —— 没有 pointer-events:none。
 // Tooltip 的 tooltip 必须是 string，否则报 "[tooltip] must be of type string"。
 //
-// 图标两条路（index.js 里 Button=Tj 的分支）：
-//   src      → IconButton($b) 渲染 <img class=icon_be5 src=…>；再加 tinted 才走 TintedIcon(mask)
-//   children → Ab 直接把子节点放进按钮里
 // 实机证明 children 放内联 <svg> 会让点击发不到按钮上（Cohtml 的 SVG 命中/冒泡不完整），
 // 所以本模组用 src + 真 .svg 文件（同 Write Everywhere / BlueprintHub）。
 //

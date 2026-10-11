@@ -1465,7 +1465,9 @@ namespace BusLineAutoStops.Systems
                 RaycastResult r;
                 if (!TryRaycast(out r)) return fallback;
                 float3 hit = r.m_Hit.m_HitPosition;
-                if (!float.IsFinite(hit.x) || !float.IsFinite(hit.z)) return fallback;
+                // net48 参考程序集没有 float.IsFinite（netstandard2.1 才有），用 Unity.Mathematics 的
+                // math.isfinite 两条构建链（官方工具链 / scripts csc 直编）都能编
+                if (!math.all(math.isfinite(hit.xz))) return fallback;
                 if (math.distance(hit.xz, fallback.xz) > kCursorMaxDrift) return fallback;
                 return new float3(hit.x, fallback.y, hit.z);
             }

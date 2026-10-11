@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * 离线门禁：T3 纯逻辑 + 版本一致性。
- * 用法: node scripts/verify.mjs
+ * 离线门禁：T3 纯逻辑 + 版本一致性（发布装订由 pack-release.js 负责，二者互补）。
+ * 用法: node scripts/verify.cjs
  */
 const { execFileSync } = require("child_process");
 const fs = require("fs");
