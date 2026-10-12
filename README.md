@@ -28,7 +28,7 @@ node scripts/deploy-local.js
 # → F:\SteamLibrary\steamapps\common\Cities Skylines II\Cities Skylines II\Mods\BusLineAutoStops\
 ```
 
-官方工具链 `dotnet build` 已修复可用（0 警告 0 错误），适合 IDE 打开与编译校验；发布打包仍以 `scripts/pack-release.js` 为准。构建命令、版本五处统一表与现役脚本清单见 `ARCHITECTURE.md`。
+官方工具链 `dotnet build` 已修复可用（0 警告 0 错误），适合 IDE 打开与编译校验；**但它会重铺部署目录、清掉前端产物，跑完必须再执行 `node scripts/deploy-local.js`**。发布打包仍以 `scripts/pack-release.js` 为准。构建命令、版本五处统一表与现役脚本清单见 `ARCHITECTURE.md`。
 
 离线纯逻辑测试：
 

@@ -32,6 +32,7 @@ node scripts/pack-release.js <版本>   # 打包 releases/<版本>/（DLL+mjs+mo
 ```
 
 官方工具链 `dotnet build` 已修复可用（0 警告 0 错误；csproj 已补 `Colossal.UI.Binding` 引用、删死 Harmony 配置、`math.isfinite` 替代 net48 没有的 `float.IsFinite`），适合 IDE/编译校验；**发布打包仍以 `scripts/pack-release.js` 为准**。
+⚠️ **但 `dotnet build` 会走官方 DeployWIP 重铺部署目录**：整个 `Mods\BusLineAutoStops\` 被清掉后只铺回 DLL+Burst 桩，deploy-local 铺的前端（mjs/mod.json/images）全没了 → 实机表现"左上角图标消失、面板选资产拦截失效"（2026-10-12 事故根因，后端仍活着，日志易误判）。**跑过 `dotnet build` 之后必须立刻 `node scripts/deploy-local.js` 重铺完整产物。**
 离线门禁：`node scripts/verify.cjs`（T3 纯逻辑 42 断言 + 版本一致性）；前端构建：`node scripts/build-frontend.js`。
 
 ## 版本五处统一（改版本必须五处一起动，verify.cjs 把关）
