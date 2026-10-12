@@ -5,7 +5,7 @@
 - **Paradox Mods**: ModId **160528**（Private）
 - **GitHub**: https://github.com/yuexian7/BusLineAutoStops
 
-## 功能（v0.11.1）
+## 功能（v0.11.2）
 
 - 快捷键（默认 G）或左上角按钮进入/退出「懒人模式」，进入时自动切到对应类型的**创建线路工具**
 - 画线时悬停路径点停满 0.18s → 落点**预览显示公交站**（依附到道路，落在光标这一侧人行道）；光标移开 0.15s 预览淡出，停回原处沿用同一枚
@@ -29,6 +29,13 @@ node scripts/deploy-local.js
 ```
 
 官方工具链 `dotnet build` 已修复可用（0 警告 0 错误），适合 IDE 打开与编译校验；**但它会重铺部署目录、清掉前端产物，跑完必须再执行 `node scripts/deploy-local.js`**。发布打包仍以 `scripts/pack-release.js` 为准。构建命令、版本五处统一表与现役脚本清单见 `ARCHITECTURE.md`。
+
+离线门禁与部署完整性：
+
+```powershell
+node scripts/verify.cjs              # 版本号四处一致 + 纯逻辑回归
+node scripts/verify.cjs --deployed   # 再加：部署目录四件套齐全、产物就是本次构建（字面量 + mtime + 尺寸）
+```
 
 离线纯逻辑测试：
 
