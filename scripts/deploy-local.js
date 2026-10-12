@@ -7,12 +7,13 @@ const fs = require("fs");
 const path = require("path");
 
 const root = path.join(__dirname, "..");
-const csc = "C:\\Program Files\\dotnet\\sdk\\8.0.425\\Roslyn\\bincore\\csc.dll";
-const managed =
-  "F:\\SteamLibrary\\steamapps\\common\\Cities Skylines II\\Cities2_Data\\Managed";
-const modsDir =
-  "F:\\SteamLibrary\\steamapps\\common\\Cities Skylines II\\Cities Skylines II\\Mods";
-const deployDir = path.join(modsDir, "BusLineAutoStops");
+// SDK 路径不写死版本号（v0.11.2 审查 P2-6），与 compile-check.js 同一个解析器；
+// 部署目录与白名单见 scripts/paths.js（verify.cjs --deployed 查的是同一个目录）。
+const { cscPath } = require(path.join(__dirname, "dotnet-sdk.js"));
+const P = require(path.join(__dirname, "paths.js"));
+const csc = cscPath();
+const managed = P.MANAGED_DIR;
+const deployDir = P.DEPLOY_DIR;
 const harmony233 =
   "C:\\Users\\10975\\.nuget\\packages\\lib.harmony\\2.3.3\\lib\\net48\\0Harmony.dll";
 const harmony222 =
@@ -148,7 +149,7 @@ console.log("DEPLOYED ->", deployDir);
 
 // 部署目录白名单清理：以前发过的 0Harmony.dll / *.pdb / 改名前的 mjs 如果留在这儿，
 // 实机测的就不是当前这份产物（v0.2.x 真的被这个坑过一次）。只留这 4 项。
-const keep = new Set(["BusLineAutoStops.dll", "BusLineAutoStops.mjs", "mod.json", "images"]);
+const keep = new Set(P.DEPLOY_ENTRIES);
 let pruned = 0;
 for (const e of fs.readdirSync(deployDir, { withFileTypes: true })) {
   if (keep.has(e.name)) continue;

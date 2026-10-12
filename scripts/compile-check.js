@@ -9,8 +9,10 @@ const fs = require("fs");
 const path = require("path");
 
 const root = path.join(__dirname, "..");
-const csc = "C:\\Program Files\\dotnet\\sdk\\8.0.425\\Roslyn\\bincore\\csc.dll";
-const managed = "F:\\SteamLibrary\\steamapps\\common\\Cities Skylines II\\Cities2_Data\\Managed";
+// SDK 路径不写死版本号（v0.11.2 审查 P2-6）：本机 SDK 一升级，写死 8.0.425 的三条链会一起断。
+const { cscPath } = require(path.join(__dirname, "dotnet-sdk.js"));
+const csc = cscPath();
+const managed = require(path.join(__dirname, "paths.js")).MANAGED_DIR;
 const harmony222 = "C:\\Users\\10975\\.nuget\\packages\\lib.harmony\\2.2.2\\lib\\net48\\0Harmony.dll";
 const harmony233 = "C:\\Users\\10975\\.nuget\\packages\\lib.harmony\\2.3.3\\lib\\net48\\0Harmony.dll";
 

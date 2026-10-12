@@ -17,7 +17,7 @@ const root = path.join(__dirname, "..");
 const XML = path.join(root, "Properties", "PublishConfiguration.xml");
 const MODJSON = path.join(root, "Frontend", "mod.json");
 
-const VERSION = "0.11.1";
+const VERSION = "0.11.2";
 
 const NL = "&#xA;";
 const BLANK = "&#xA;&#xA;";
@@ -56,6 +56,12 @@ const zhLong = [
 
 /* ------------------------------ ChangeLog ------------------------------- */
 const enLog = [
+  "v0.11.2 hardening release: nothing about how a stop gets placed changed, and you should feel no difference while playing.",
+  "- Fixed (diagnostics): the log line that reports the outcome of a preview - how far the game snapped it from the point we fed it, which side of the road it landed on, whether the game accepted the spot - was gated on the same switch as the earlier line, so it never appeared in BusLineAutoStops.log at all. It is output again now, so a log file you send with a report can say exactly where a stop would have landed.",
+  "- Safer (leaving lazy mode): when the mode ends, the mod now waits for the game's in-flight work to finish before it takes back the preview ghost - the same order it already used when the mode starts. That closes one more route to the rare crash that happens when structure changes are made while handles are held.",
+  "- Safer (asset panel): the filtered asset list is now remembered only after it has been built successfully, so a failure half way through can no longer serve the previous list back as if it were the new one.",
+  "- Duplicate check: deciding whether a bus stop is already there no longer depends on whether a line has connected to it. The game gives every stop its connection buffer the moment it is created, so the check now follows the game's own definition of a stop and stays correct for assets that carry the label without the buffer.",
+  "- Author side, no effect on players: before a build is considered ready, the tooling checks the deployed folder is complete (dll, frontend, mod.json, icons), that the version number matches in all four places it is written, and that the compiler is found by asking the SDK rather than by a pinned path.",
   "v0.11.1 the lazy-mode highlight no longer depends on the panel filter, and the duplicate diagnostic names the panel it came from.",
   "- Changed (lazy mode): the lit stop asset stays lit even when the panel filter list fails to load - the highlight now follows lazy mode itself, one link less to break. - Improved (diagnostics): the duplicate-count line also names the panel it came from and lists up to three duplicated assets, so a log report can be tied to one category instead of a guess.",
   "v0.11.0 the transport panel lights up only the asset you clicked, and lazy mode keeps both the line tool and the stop asset you are placing lit.",
@@ -65,6 +71,12 @@ const enLog = [
 ].join(NL);
 
 const zhLog = [
+  "v0.11.2 加固版：放公交站这件事的玩法一点没变，玩的时候应当感觉不到差别。",
+  "- 修复（日志）：报告预览结果的那一行——原版把幽灵吸附到了哪儿、离我们喂下去的位置多远、落在路的哪一侧、判定是通过还是只是警告——以前被前一行日志的开关吃掉，模组日志里一条都不会出现。现在恢复输出，于是随反馈一起发来的日志能确切说明“这一枚为什么会放在这里 / 为什么没放”。",
+  "- 更稳（退出懒人模式）：模式结束时，模组先等游戏在跑的活儿收干净，再收回那枚预览幽灵，与进入模式时用的是同一套顺序；又少掉一类“持有句柄期间改结构”的罕见崩溃路径。",
+  "- 更稳（资产面板）：过滤名单改成算成功之后才记账，中途出问题时不会把上一份名单当成新名单发回面板。",
+  "- 查重判据：判断“这里是不是已经有公交站”不再取决于有没有线路连上它。原版在建公交站的那一刻就已经把连接缓冲一起给了它，所以现在的判据跟原版自己认公交站的方式一致，遇到只带公交站标记、没有连接缓冲的资产也不会漏判。",
+  "- 开发侧（不影响玩家）：出包前会先检查部署目录四件套齐全（本体、前端、mod.json、图标）、版本号四处一致，编译工具的路径也不再写死某一个 SDK 版本。",
   "v0.11.1 懒人模式高亮不再依赖面板过滤名单；去重自检日志会写明来自哪个面板、重复的是哪几枚资产。",
   "- 调整（懒人模式）：当前公交站资产的高亮在过滤名单取不到时照样亮 —— 高亮现在只跟随懒人模式本身，少了一条会断的链。 - 改进（诊断）：去重计数那一行现在会写明来自哪个面板，并列出最多三枚重复资产，于是日志报告能精确对应到某一个分类，而不用猜。",
   "v0.11.0 点击资产只点亮这一个；懒人模式开着时，线路工具和你正在用的公交站资产两处同时点亮。",

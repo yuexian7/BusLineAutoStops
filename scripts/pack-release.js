@@ -528,7 +528,6 @@ const modCs = fs.readFileSync(path.join(root, "BusLineAutoStopsMod.cs"), "utf8")
   // （Game/UpdateSystem.cs:271-277 进 m_Systems，:278-291 进 m_RefMap[另一个系统]），
   // Refresh/AddSystemUpdate 不去重（:425/:454 无条件 m_Updates.Add）——
   // 同一个系统注册三次 = 一帧跑三遍。v0.6.1 就是这样自己把 Apply 清掉、并且大概率把游戏打崩的。
-  const lmFile = srcOf("Systems/LazyModeSystem.cs");
   const regs = (modCs.match(/updateSystem\.(UpdateAt|UpdateAfter|UpdateBefore)<LazyModeSystem/g) || []);
   push("LazyModeSystem 只注册一次（三次=一帧跑三遍，闪退根因）",
     regs.length === 1 && /UpdateBefore<LazyModeSystem, ToolOutputSystem>/.test(modCs)
@@ -536,10 +535,85 @@ const modCs = fs.readFileSync(path.join(root, "BusLineAutoStopsMod.cs"), "utf8")
     "注册 " + regs.length + " 处");
   const uiRegs = (modCs.match(/updateSystem\.(UpdateAt|UpdateAfter|UpdateBefore)<UiCommandSystem/g) || []);
   push("UiCommandSystem 也只注册一次", uiRegs.length === 1, "注册 " + uiRegs.length + " 处");
-  push("结构改动前收 job 依赖（FlushPendingJobs 存在且在清理最前面）",
-    /private void FlushPendingJobs\(\)/.test(lmFile) &&
-    /RunExitCleanup[\s\S]{0,400}?FlushPendingJobs\(\);/.test(lmFile), "");
 }
+{
+  // —— v0.11.2 第三轮审查改进项（P1-1 死分支复活 / P1-2 结构改动时序）——
+  // 这两枚钉子都是"检查器自己不够严"换来的：
+  // · 旧的那枚「结构改动前收 job 依赖」写成 `RunExitCleanup[\s\S]{0,400}?FlushPendingJobs\(\);`，
+  //   只要 400 字符内出现过 FlushPendingJobs 就绿 —— 而实际代码里 ResetSettle 排在它前面，
+  //   检查照样通过（2026-10-12 审查 P1-2）。现在按**方法体内部**的先后次序判。
+  // · `[预览结果]` 那枚只查 utf16Has(字面量)，分支死了、实机一条都不打，产物里字面量还在 → 假绿
+  //   （待办 #1 / 2026-10-12 审查 P1-1）。现在判的是"闸门写的到底是哪个标志"。
+  const lmRaw = srcOf("Systems/LazyModeSystem.cs");
+  const lm = lmRaw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\r\n]*/g, "");
+  /** 取某个方法签名之后的方法体（到第一个 8 空格缩进的收尾大括号）；默认在剥过注释的 LazyModeSystem 里找。 */
+  const bodyOf = (sig, src) => {
+    const text = src || lm;
+    const i = text.indexOf(sig);
+    if (i < 0) return "";
+    const m = text.slice(i).match(/[\s\S]*?\n {8}\}/);
+    return m ? m[0] : "";
+  };
+  const exitBody = bodyOf("private void RunExitCleanup(ExitDeletePolicy policy, float now)");
+  const flushAt = exitBody.indexOf("FlushPendingJobs();");
+  const retireAt = exitBody.indexOf("ResetSettle(now);");
+  push("v0.11.2 P1-2：RunExitCleanup 里 FlushPendingJobs 先于任何结构改动（ResetSettle→RetirePreview）",
+    /private void FlushPendingJobs\(\)/.test(lmRaw) && flushAt >= 0 && retireAt >= 0 && flushAt < retireAt,
+    flushAt < 0 || retireAt < 0 ? "方法体里没找到两句之一" : "flush@" + flushAt + " reset@" + retireAt);
+  push("v0.11.2 P1-2：两条清理路径顺序一致（BeginSession 消费段仍是 flush→pending→preview）",
+    /if \(m_beginCleanupPending\)\s*\{\s*m_beginCleanupPending = false;\s*FlushPendingJobs\(\);\s*RetirePendingTemps\(\);\s*RetirePreview\(\);/.test(lm), "");
+  const feedBody = bodyOf("private void FeedPreview(ControlPoint hover, float3 cursor)");
+  const claimBody = bodyOf("private void ClaimPendingPreview(ControlPoint hover, float3 cursor)");
+  push("v0.11.2 P1-1：认领结果日志的闸门是 m_previewResultLogged（不再共用喂送那个标志）",
+    /if \(!m_previewResultLogged\)\s*\{\s*m_previewResultLogged = true;/.test(claimBody)
+    && !claimBody.includes("m_previewAnnounced"), "两条闸门各自独立，否则 [预览结果] 永远 0 条");
+  push("v0.11.2 P1-1：喂送侧只置 m_previewAnnounced，不碰 result 标志",
+    /if \(m_previewAnnounced\) return;\s*m_previewAnnounced = true;/.test(feedBody)
+    && !feedBody.includes("m_previewResultLogged = true"), "");
+  push("v0.11.2 P1-1：两个标志在每个静止事件都归零（重置点数必须相同且 ≥2：移动分支 + ResetSettleTimers）",
+    (lm.match(/m_previewAnnounced = false;/g) || []).length ===
+    (lm.match(/m_previewResultLogged = false;/g) || []).length
+    && (lm.match(/m_previewResultLogged = false;/g) || []).length >= 2, "");
+  push("v0.11.2 P1-1：两条日志字面量都进了 DLL",
+    utf16Has(dll, "[预览站台]") && utf16Has(dll, "[预览结果]"), "");
+  // 查重索引（P2-5）：审查给的前提被反编译否掉了——ConnectedRoute 缓冲与 BusStop 标记同一份原型给的，
+  // 未连线的站台一直在索引里（research/TransportStop.cs:50-59 / ObjectPrefab.cs:43 / GenerateObjectsSystem.cs:1232）。
+  // 本版把查询收到原版自己的口径（research/ResourceAvailabilitySystem.cs:1021：BusStop+!Deleted+!Temp），
+  // 于是这两枚钉子钉的是"别再退回冗余判据"，而不是"补上漏掉的站台"。
+  {
+    const q = (lm.match(/m_stopQuery = GetEntityQuery\(new EntityQueryDesc[\s\S]*?\n {12}\}\);/) || [""])[0];
+    push("v0.11.2 P2-5：站台索引查询不再要求 ConnectedRoute 缓冲（原型证据：标记与缓冲同时给）",
+      q.length > 0 && !q.includes("ReadOnly<ConnectedRoute>")
+      && q.includes("Game.Routes.BusStop") && q.includes("Game.Routes.TramStop"), q.slice(0, 60).replace(/\s+/g, " "));
+    push("v0.11.2 P2-5：查询排除 Temp 与 Deleted（与原版 ResourceAvailabilitySystem.cs:1021 同口径）",
+      /None = new ComponentType\[\][\s\S]{0,200}?ReadOnly<Temp>[\s\S]{0,200}?ReadOnly<Game\.Common\.Deleted>/.test(q), "");
+    push("P2-5 取证文件在本地可复查（research/ 不入库，但结论必须能对行号）",
+      fs.existsSync(path.join(root, "research", "TransportStop.cs"))
+      && fs.readFileSync(path.join(root, "research", "TransportStop.cs"), "utf8").includes("components.Add(ComponentType.ReadWrite<BusStop>())"),
+      "缺文件就重新 ilspycmd -t Game.Prefabs.TransportStop");
+  }
+  {
+    // 资产过滤（P2-4）：构建标记必须**成功之后**才置位，否则极端异常路径会把旧名单当新名单返回
+    const afRaw = srcOf("AssetFilterService.cs");
+    const af = afRaw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\r\n]*/g, "");
+    const bj = bodyOf("public static string BuildJson()", af);
+    const parts = bj.split("MarkBuilt(seq, on, kind);");
+    push("v0.11.2 P2-4：BuildJson 里两处置标记之前都已经算出 s_json（标记只认证已完成的构建）",
+      bj.includes("MarkBuilt") && parts.length === 3
+      && parts[0].includes('s_json = "{\\"on\\":false') && parts[1].includes('s_json = "{\\"on\\":"')
+      && !parts[2].includes("s_json ="),
+      "方法体 " + bj.length + " 字符 / 切出 " + parts.length + " 段；旧写法在方法开头三行直接置 s_built*，" +
+      "枚举抛异常时标记已置、名单还是上一份");
+    push("v0.11.2 P2-4：BuildJson 体内不再直接赋值 s_built*（只有 MarkBuilt 一处写）",
+      !/s_built(Seq|On|Kind)\s*=/.test(bj)
+      && /private static void MarkBuilt\(int seq, bool on, TransportKind kind\)\s*\{\s*s_builtSeq = seq;\s*s_builtOn = on;\s*s_builtKind = kind;\s*\}/.test(af)
+      && (af.match(/^\s*s_builtSeq = seq;/gm) || []).length === 1, "");
+    push("v0.11.2 P2-4：过滤名单仍走 call()（没把几百条 JSON 塞进每帧绑定）",
+      srcOf("Systems/UiCommandSystem.cs").includes("GetAssetFilter")
+      && utf16Has(dll, "GetAssetFilter"), "P2-4 的前提：这条链一次都不许变成每帧序列化");
+  }
+}
+
 {
   // —— 安全自查钉子（2026-10-09，逐条对照 BlueprintHub 崩溃交接 Desktop/blueprinthub-handoff.md）——
   // 那份交接的七条隐患归纳成三句话：①别在池线程/回调里调引擎 API，②缓存要有生命周期与负缓存，
