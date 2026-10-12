@@ -54,13 +54,11 @@ namespace BusLineAutoStops
             {
                 return s_json;
             }
-            s_builtSeq = seq;
-            s_builtOn = on;
-            s_builtKind = kind;
 
             if (!on)
             {
                 s_json = "{\"on\":false,\"kind\":0,\"seq\":" + seq + ",\"allow\":[],\"universe\":[],\"lines\":[]}";
+                MarkBuilt(seq, on, kind);
                 return s_json;
             }
 
@@ -107,10 +105,27 @@ namespace BusLineAutoStops
                      + ",\"allow\":[" + Join(s_allow) + "]"
                      + ",\"lines\":[" + Join(s_lines) + "]"
                      + ",\"universe\":[" + Join(s_universe) + "]}";
+            MarkBuilt(seq, on, kind);
 
             BusLineAutoStopsMod.log.Info("[资产过滤] kind=" + kind + " 同类=" + s_allow.Count
                 + " 全部站台=" + s_universe.Count + " 线路=" + s_lines.Count + " 生效=" + (actuallyOn ? "Y" : "N"));
             return s_json;
+        }
+
+        /// <summary>
+        /// 记账"这一组 (seq, on, kind) 已经构建好了"。
+        ///
+        /// v0.11.2（审查 P2-4）从方法开头挪到这里：**只有 s_json 真的算出来了才允许复用**。
+        /// 旧写法在枚举资产之前就置位，于是构建中途抛异常时（本方法被 CallBinding 直接调用，
+        /// 上层各环节都有 catch，异常不会掀翻游戏）标记已经写上了、s_json 还是上一份，
+        /// 同一 seq 的后续调用就会把旧名单当新名单返回——换存档后实体键(index:version)失效的
+        /// 那段时间里，面板拿到的是一份过期过滤集。
+        /// </summary>
+        private static void MarkBuilt(int seq, bool on, TransportKind kind)
+        {
+            s_builtSeq = seq;
+            s_builtOn = on;
+            s_builtKind = kind;
         }
 
         private static string Join(List<string> items)

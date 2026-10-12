@@ -27,7 +27,7 @@ namespace BusLineAutoStops
     /// </summary>
     public class BusLineAutoStopsMod : IMod
     {
-        public const string kVersion = "0.11.1";
+        public const string kVersion = "0.11.2";
 
         public static ILog log = LogManager.GetLogger("BusLineAutoStops").SetShowsErrorsInUI(false);
 
@@ -133,6 +133,18 @@ namespace BusLineAutoStops
             }
         }
 
+        /// <summary>
+        /// 模组被卸载（退出到主菜单 / 关游戏）时调用。**这里故意不注销**语言源与选项页：
+        /// · 注销 API 其实是有的——`LocalizationManager.RemoveSource(localeId, source)`
+        ///   （ilspycmd Colossal.Localization/LocalizationManager.cs:357）与
+        ///   `ModSetting.UnregisterInOptionsUI()`（Game.Modding/ModSetting.cs:51），
+        ///   但 RemoveSource 命中当前语言时会 `activeDictionary.Clear()` + 重载 + 广播变更
+        ///   （同文件 :368-372），而 OnDispose 属于拆除阶段：UI/订阅者可能还活着，
+        ///   在拆除期做这类广播改动是本模组一直回避的崩溃族（开发纪律「拆除期不做重活」）。
+        /// · 现实口径：游戏禁用模组要重启进程才生效，这些注册项的寿命 = 进程寿命，不会跨重启残留。
+        /// 已知限制（v0.11.2 审查 P3-2 定案：记录，不改）：同一场进程内禁用本模组后，
+        /// 选项页仍留着本模组那一栏（里面的开关已不再联动世界），重启游戏才消失。
+        /// </summary>
         public void OnDispose()
         {
             Setting.Instance = null;

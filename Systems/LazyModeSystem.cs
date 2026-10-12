@@ -192,6 +192,17 @@ namespace BusLineAutoStops.Systems
         /// <summary>本静止事件里成功喂送的日志 + 探针已经做过一次。</summary>
         private bool m_previewAnnounced;
 
+        /// <summary>
+        /// 本静止事件里**认领结果**那一行（`[预览结果]`）已经打过一次。
+        ///
+        /// 为什么不能复用 <see cref="m_previewAnnounced"/>（v0.11.2 修的死分支，开发笔记待办 #1）：
+        /// 喂送成功时在 FeedPreview 里就置位 true，而认领侧写在 ClaimPendingPreview 的
+        /// `if (!m_previewAnnounced)` —— 两个闸门共用一个标志，认领那条永远进不去，
+        /// 实机整场 `[预览结果]` 一条都不打。产物自检只验了字面量在 DLL 里（utf16Has），
+        /// 分支死了照样绿，所以本版把两个闸门彻底分开。
+        /// </summary>
+        private bool m_previewResultLogged;
+
         /// <summary>本静止事件不再喂：原版没造出幽灵，或造出来的落位已经有别的同类站台。</summary>
         private bool m_previewRefused;
 
@@ -302,13 +313,38 @@ namespace BusLineAutoStops.Systems
             m_stopQuery = GetEntityQuery(new EntityQueryDesc
             {
                 // 站台标记类型是 Game.Routes.BusStop / TramStop（Game.Objects.TransportStop 不存在）
-                All = new ComponentType[] { ComponentType.ReadOnly<ConnectedRoute>() },
+                //
+                // v0.11.2（审查 P2-5，结论把这条提法本身否掉了）：原来这里还要求
+                // `All = ConnectedRoute`，担心"手工放好、还没被线路连上的站台不进索引"。
+                // 反编译取证：ConnectedRoute 缓冲与 BusStop/TramStop 标记是**同一份实例原型**给的，
+                // 不由连线决定——Game.Prefabs.TransportStop.GetArchetypeComponents()（ilspycmd 1.6.2f1
+                // 单类型 dump，research/TransportStop.cs:50-59）对 Bus 型一次给出
+                // :57 ConnectedRoute、:59 BusStop（Tram 型 :85 ConnectedRoute、:87 TramStop），
+                // ObjectPrefab.RefreshArchetype 把整套原型记进 ObjectData.m_Archetype
+                // （research/ObjectPrefab.cs:43，物件实例必带 Transform：同文件 :22），建实体时
+                // （GenerateObjectsSystem.cs:1232 CreateEntity(m_Archetype)）一次铺齐，
+                // ApplyObjectsSystem.cs:669-685 转正只摘 Temp 动画类/加 Applied，不会补组件。
+                // 反向也成立：原版所有写 ConnectedRoute 的地方
+                // （WaypointConnectionSystem.cs:111-113、ApplyRoutesSystem.cs:66-72、
+                // ConnectedRouteSystem.cs:34-36）都是 `HasBuffer` 判过之后往**已有缓冲**里塞元素，
+                // 从不新建缓冲。
+                // 所以那个担心不成立，这条 All 是纯冗余。现在按原版自己的口径来：
+                // ResourceAvailabilitySystem.cs:1021（research/ 里有同一份 dump）认站台用的是
+                // BusStop + Exclude<Deleted> + Exclude<Temp>。
+                // 去掉 All 的实际收益：万一有第三方资产只带 BusStop 没带缓冲（这点**未取证**，
+                // 只找到经 Game.Prefabs.TransportStop 授权这一条路），它照样进索引，
+                // 查重就会拒绝在它旁边叠一枚——判据变宽的方向是"少放"，安全。
+                All = new ComponentType[0],
                 Any = new ComponentType[]
                 {
                     ComponentType.ReadOnly<Game.Routes.BusStop>(),
                     ComponentType.ReadOnly<Game.Routes.TramStop>(),
                 },
-                None = new ComponentType[] { ComponentType.ReadOnly<Temp>() },
+                None = new ComponentType[]
+                {
+                    ComponentType.ReadOnly<Temp>(),
+                    ComponentType.ReadOnly<Game.Common.Deleted>(),
+                },
             });
 
             m_objectQuery = GetEntityQuery(new EntityQueryDesc
@@ -511,6 +547,7 @@ namespace BusLineAutoStops.Systems
                 m_settled = false;
                 m_previewFailLogged = false;
                 m_previewAnnounced = false;
+                m_previewResultLogged = false;
                 m_previewRefused = false;
                 m_previewEmptyLogged = false;
                 m_attachFailLogged = false;
@@ -1216,9 +1253,11 @@ namespace BusLineAutoStops.Systems
                 return;
             }
 
-            if (!m_previewAnnounced)
+            // v0.11.2：认领结果的闸门必须与喂送日志的 m_previewAnnounced **分开**——
+            // 喂送成功时那个标志已经是 true，共用它就等于这条永远不打（待办 #1 的死分支）。
+            if (!m_previewResultLogged)
             {
-                m_previewAnnounced = true;
+                m_previewResultLogged = true;
                 BusLineAutoStopsMod.log.Info("[预览结果] 幽灵已出，离喂点 " + dist.ToString("0.0")
                     + "m @(" + Pos(landed) + ")，判定="
                     + (EntityManager.HasComponent<Game.Tools.Warning>(found) ? "Warning（可放，障碍物会被替换）" : "通过")
@@ -1758,6 +1797,7 @@ namespace BusLineAutoStops.Systems
             m_lastPos = new float3(float.MaxValue, float.MaxValue, float.MaxValue);
             m_previewFailLogged = false;
             m_previewAnnounced = false;
+            m_previewResultLogged = false;
             m_previewRefused = false;
             m_previewEmptyLogged = false;
             m_attachFailLogged = false;
@@ -1887,8 +1927,14 @@ namespace BusLineAutoStops.Systems
         private void RunExitCleanup(ExitDeletePolicy policy, float now)
         {
             SettleDwell(false);
-            ResetSettle(now);
+            // v0.11.2（P1-2）：顺序与上面 FlushPendingJobs 的注释对齐——**先收干净 job，再做结构改动**。
+            // 旧写法把 ResetSettle(now)（里面有 RetirePreview → AddComponent<Deleted>）排在
+            // FlushPendingJobs() 之前，等于在原版线路/物件工具的 job 还在飞行中就改结构，
+            // 正是"持有句柄期间改结构 → 空托管栈原生崩溃"那一类隐患。
+            // BeginSession 那条路径（OnUpdate 里 m_beginCleanupPending）本来就是这个顺序，现在两条一致。
+            // SettleDwell 只写托管状态，不碰世界，留在最前面没有影响。
             FlushPendingJobs();
+            ResetSettle(now);
 
             int deleted = 0, kept = 0;
             bool doDelete = TransportKindRules.ShouldDeleteSessionStops(policy);
