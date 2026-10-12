@@ -2,7 +2,7 @@
 
 给下一个接手者的最小集：现行机制、硬不变量、构建命令、待办。
 逐版迭代史与机制取证（96 条校正、每版实机日志）在 `docs/history/开发笔记-v0.1.1~v0.11.1.md`（已冻结，只查不改）。
-当前版本状态：**v0.11.2 已出包（`releases/0.11.2/`），线上 Paradox Mods ModId 160528 / Private 仍是 0.11.1（versionId=12，2026-10-11 上传）**；玩家本地实机通过后才上传本版。
+当前版本状态：**v0.11.2 已上传线上**：ModId 160528 / versionId=**13** / userVersion=0.11.2 / size=54185B / **仍 Private**（2026-10-13 发布；发前用 `pull-live.js` 核对线上停在 versionId=12，发后回读 versions 表 + 网页可访问性树确认 MOD VER.、描述、四个外链、Code Mod、1.6.* 全部仍在）。玩家本地实机验收，重点看日志里 `[预览结果]` 是否恢复输出。
 
 ## 机制一页纸：懒人模式状态机
 
@@ -104,6 +104,7 @@ MSYS_NO_PATHCONV=1 DOTNET_ROLL_FORWARD=Major dotnet "<游戏>\Cities2_Data\Conte
 - `node scripts/verify.cjs` → 版本四处一致 + T3 `pass=42 fail=0`。
 - `node scripts/verify.cjs --deployed` → 15 项全绿；守卫有效性做过一次真实反证：源码改动后、重编之前跑，它准确报出"最新的 AssetFilterService.cs 比部署 DLL 新"。
 - P2-5 的原型结论有 `file:line` 反编译证据（上面第 5 条，dump 存在 `research/`，不入库）。
+- 发布回读（2026-10-13）：`/mods/versions` 登记 versionId=13 / 0.11.2；模组页 `MOD VER.=0.11.2`、`Private mod`、`Code Mod`、`SUGGESTED GAME VER. 1.6.*`、GitHub/X/Ko-fi/论坛四条链接与中英描述逐段仍在 —— NewVersion 重推元数据没有把玩家线上手调过的东西盖掉。
 
 **未验证（要靠玩家本地实机）**
 
