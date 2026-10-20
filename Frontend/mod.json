@@ -2,7 +2,7 @@
   "id": "BusLineAutoStops",
   "displayName": "BusLine AutoStops",
   "author": "yuexian",
-  "version": "0.11.2",
+  "version": "0.13.0",
   "description": "Auto-place bus stops and tram stops with the game's own placement / 用原版放置流程自动落公交站、有轨电车站",
   "isCodeMod": true,
   "dependencies": []

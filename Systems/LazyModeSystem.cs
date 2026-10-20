@@ -116,8 +116,54 @@ namespace BusLineAutoStops.Systems
         /// </summary>
         internal const float kSnapDistance = 4f;
 
-        /// <summary>悬停点就地查重用的小半径：光标基本压在已有站台上时直接不喂定义，省一次白干。</summary>
-        internal const float kHoverSkipDistance = 3f;
+        /// <summary>
+        /// 需求 3（v0.13.0）："光标已进入既有站台的依附范围"的判距（米）。
+        ///
+        /// 为什么从 3m 放宽到 4m：实机 2026-10-21 01:08:18 的失败正是 3.07m —— 光标停在路口折线点上，
+        /// 旁边 4m 内就是既有公交站，3m 的判据差一点点没拦住，于是喂了一枚模拟站台；那枚幽灵跟
+        /// 站台/路面物件一碰就被 ValidationSystem 挂上 `Game.Tools.Error`，而
+        /// `ToolBaseSystem.GetAllowApply()`（:541-543）只要全世界有任何 Error 就整帧为假 ——
+        /// 玩家那一笔路径点（本该原版直接依附到站台上）被吞掉，表现成"在这个站台放路径点失败"。
+        /// 4m 与 <see cref="kSnapDistance"/> 同值：反正落位在 4m 内也会被判成"同一处叠了两个"，不会误伤。
+        /// 判断依据优先用**工具自己解析出来的实体**（`hover.m_OriginalEntity` 是带 ConnectedRoute 的站台
+        /// = 原版 `FindWaypointLocation` 已经决定依附它），距离只是兜底。
+        /// </summary>
+        internal const float kStopAttachRadius = 4f;
+
+        /// <summary>
+        /// 需求 2（v0.13.0）：拖拽落地后，判定"哪一枚路径点是这次拖拽动到的"的半径（米）。
+        /// 量的是路中央的 <c>Position</c>（拖拽落点就是它），宽路吸附后离光标横向差 5~10m 都属正常。
+        /// </summary>
+        internal const float kDragAttachRadius = 12f;
+
+        /// <summary>
+        /// 需求 2（v0.13.0）：松手后连续这么多帧都"光标不在落点"才作废。
+        /// 松手帧原版先 Clear 控制点、再重新射线补一个（RouteToolSystem.cs:2039-2048），
+        /// 采样点会跳 1~2 帧；0.12.1 实机（2026-10-21 01:08:28）就是被这一跳骗掉了整整一笔拖拽。
+        /// </summary>
+        internal const int kDragAwayGraceFrames = 3;
+
+        /// <summary>
+        /// 需求 2（v0.12.0）补提交的帧预算：松手那一帧解析不出父级时，最多再追这么多帧。
+        /// 实机（2026-10-19 23:25:30 会话）松手帧的射线正压在另一枚站台上，下一帧同一个位置
+        /// 就能解析出 `射线父级 … 预制体=Medium Road`；30 帧（约 0.5s）对"玩家还停在那儿"足够，
+        /// 再多就会把站台落到玩家早就离开的地方。
+        /// </summary>
+        internal const int kDragRetryMaxFrames = 30;
+
+        /// <summary>
+        /// 补提交期间光标允许漂多远（米）：超过就认为玩家已经去忙别的了，这一笔作废
+        /// （落点仍是松手处，但它已经不在光标下了，硬落就成了"凭空冒出一个站台"）。
+        /// 6f = 一个站台的吸附量级（落位离悬停点通常 5~7m），再宽会把"顺手挪一挪"也算成没挪。
+        /// </summary>
+        internal const float kDragRetryRadius = 6f;
+
+        /// <summary>
+        /// 父级兜底（v0.12.0）：解析不到可依附父级时，若光标这么近的范围内有一枚同类站台，
+        /// 就沿用它依附的那条路/那个节点 —— 站台本来就钉在玩家脚下这条路上。
+        /// 只在失败路径上做一次索引查询（<see cref="StopIndex.Nearest"/>，无分配），不扫世界。
+        /// </summary>
+        internal const float kNearestStopParentRadius = 12f;
 
         /// <summary>
         /// 人行道被路灯 / 垃圾桶之类占住时的**沿路让位**阶梯（米，沿道路切向，0=原位）。
@@ -164,6 +210,20 @@ namespace BusLineAutoStops.Systems
 
         /// <summary>待提交最多等多少帧才放弃。</summary>
         internal const int kCommitMaxWaitFrames = 30;
+
+        /// <summary>
+        /// v0.12.0：原版工具**本帧**打算走哪条输出管线（<c>Game.Tools.ApplyMode</c>：None=0 / Apply=1 / Clear=2）。
+        /// 三个数就是原版枚举的整数值（ApplyMode.cs:3-8），判断只用相等比较，绝不做位运算。
+        ///
+        /// 读的是 <c>ToolBaseSystem.applyMode</c> 这个**公开只读属性**（ToolBaseSystem.cs:182
+        /// `public ApplyMode applyMode { get; protected set; }`）——setter 是 protected，
+        /// 我们从外面连写都写不进去。0.5~0.7 那条"反射代按"链路（ToolApplyProxy + GetSetMethod）
+        /// 依旧是退役状态，这两件事没有关系：本版只是**看一眼**原版这一帧要干什么，
+        /// 既不注入、也不模拟玩家按键（见 pack-release.js 的"代按链路退役"钉子）。
+        /// </summary>
+        internal const int kPhaseNone = 0;
+        internal const int kPhaseApply = 1;
+        internal const int kPhaseClear = 2;
 
         private ToolSystem m_ToolSystem;
         private PrefabSystem m_PrefabSystem;
@@ -269,6 +329,77 @@ namespace BusLineAutoStops.Systems
         private bool m_haveCpCount;
         private int m_lastCpCount;
 
+        /// <summary>
+        /// 需求 2（v0.12.0）：上一帧我们看到的线路工具控制点状态。
+        /// 拖拽松手那一帧原版已经先把 m_State 打回 Default（RouteToolSystem.cs:2039），
+        /// 本帧读到的态不可信，判定只能用"上一帧是 Modify + 本帧原版真的写了 Apply"
+        /// 这对组合（<see cref="PlacementDecisions.DecideDragCommit"/>）。
+        /// </summary>
+        private ToolLineState m_prevLineState = ToolLineState.Default;
+
+        /// <summary>需求 1（v0.12.0）：<c>[预览续命]</c> 那条日志每个静止事件只打一次（Clear 帧可能连着来）。</summary>
+        private bool m_rescueLogged;
+
+        /// <summary>需求 1（v0.12.0）：本场补喂了多少次 —— 实机排查"还闪不闪"看它。</summary>
+        private int m_rescueCount;
+
+        /// <summary>
+        /// 需求 2（v0.12.0）：松手帧没解析出父级的那一笔，转入补提交。
+        /// 落点（松手处光标真实点 + 当次资产）在这里定格，后续帧只重试"解析父级 → 喂定义"，
+        /// 绝不再跟着光标跑（否则就成了"鼠标在哪儿站台落在哪儿"，与拖拽无关了）。
+        /// </summary>
+        private bool m_dragLandingArmed;
+        private float3 m_dragLandingSpot;
+        private Entity m_dragLandingPrefab;
+        private int m_dragLandingFrames;
+
+        /// <summary>
+        /// 需求 2（v0.12.0）：**每一帧**都记下的光标真实点。
+        ///
+        /// 为什么不能复用 <see cref="m_lastPos"/>：那是"静止判定"的锚点，只在光标**动了**的时候才更新
+        /// （`distance &gt; kMoveEpsilon` 那条分支），于是玩家松手那一刻它记的是"上一次明显移动时的位置"，
+        /// 不是松手处。松手帧若恰好没有悬停点（原版先 Clear 控制点再重新射线，没打中就是空的），
+        /// 拿 m_lastPos 当落点会差出一次微移的距离；而拖拽落站偏偏就吃这个精度。
+        /// 这里只做一个 float3 赋值，平稳帧成本可忽略。
+        /// </summary>
+        private float3 m_lastCursor;
+
+        /// <summary>
+        /// 需求 2（v0.12.0）：松手帧被 RetirePreview 清掉的那条线索 —— "玩家眼前那枚预览挂在哪条路上"。
+        /// 补提交期间同样先用它（预览能显示 = 这处**已经**解析成功过），
+        /// 它是"松手时光标压着站台/线路飘带"那类局面唯一的可靠答案（实机 2026-10-19 23:25:30）。
+        /// </summary>
+        private Entity m_dragLandingSeenParent;
+        private float3 m_dragLandingSeenSpot;
+
+        /// <summary>
+        /// 需求 2（v0.13.0）：本笔拖拽动的是哪一条线（**真实** Route 实体，不是 Temp）。
+        ///
+        /// 为什么需要它：左键画线那条路能靠"改写控制点 m_OriginalEntity"让原版把停靠点连到站台
+        /// （`RewriteControlPointAttachment`，笔记 #71），而拖拽这条路**没有控制点可改** ——
+        /// 松手那一帧原版已经把线路改完、路径点也造出来了。要在事后把它接到我们刚落地的站台上，
+        /// 就必须知道"哪条线、哪一枚路径点"，所以拖拽期间把工具悬停到的 Route 实体记下来。
+        /// </summary>
+        private Entity m_dragRoute;
+        private int m_dragRouteIndex = -1;
+
+        /// <summary>需求 2（v0.13.0）：松手后"光标不在落点"的连续帧数（<see cref="kDragAwayGraceFrames"/> 才作废）。</summary>
+        private int m_dragAwayFrames;
+
+        /// <summary>
+        /// 需求 1（v0.13.0）：本静止事件已经做过一次"只解析父级、不显示幽灵"的记录。
+        /// 拖拽前/拖拽中不预览，但落地仍然要父级 —— 所以静默解析一次，把答案存进
+        /// m_previewSpot / m_previewParent / m_hasPreviewSpot（ArmDragLandingFields 用的就是它们）。
+        /// </summary>
+        private bool m_hintResolved;
+        private bool m_hintLogged;
+
+        /// <summary>需求 2（v0.13.0）：站台缺 ConnectedRoute 缓冲的告警只打一次（每场）。</summary>
+        private bool m_stopBufferWarned;
+
+        /// <summary>本帧光标真实点（落地判据用它判"玩家有没有走开"；松手帧之后再没有悬停点也能判）。</summary>
+        private float3 m_previewCursorNow;
+
         /// <summary>已落地的会话站台（LIFO，右键撤点从栈顶删；线路完成时清空=全部保留）。</summary>
         private readonly List<Entity> m_placed = new List<Entity>();
 
@@ -287,6 +418,16 @@ namespace BusLineAutoStops.Systems
             public Entity Parent;
             public Entity Prefab;
             public int WaitedFrames;
+
+            /// <summary>需求 2（v0.12.0）：这一笔来自"拖拽松手"，落地后**不进 m_placed**（每次拖拽新增即完成，原版同样不允许右键回退，见 <see cref="PlacementDecisions.DragCommitIsUndoable"/>）。</summary>
+            public bool DragCommit;
+
+            /// <summary>
+            /// 需求 2（v0.13.0）：这一笔拖拽动到的线路实体与路径点下标（只在 DragCommit 时有意义）。
+            /// 落地后靠它们把那一枚已经造出来的路径点接到新站台（<see cref="AttachDraggedWaypoint"/>）。
+            /// </summary>
+            public Entity DragRoute;
+            public int DragRouteIndex;
         }
 
         private readonly List<PendingCommit> m_pending = new List<PendingCommit>();
@@ -478,6 +619,8 @@ namespace BusLineAutoStops.Systems
             {
                 SettleDwell(false);
                 m_haveCpCount = false;
+                m_prevLineState = ToolLineState.Default; // 需求 2：中途换工具，拖拽闩锁作废，防止回来后误判
+                m_dragLandingArmed = false;                // 需求 2（v0.12.0）：补提交跟着会话走，换工具即弃
                 string name = SafeToolName(active);
                 BusLineAutoStopsMod.log.Info("[退出懒人模式] 当前工具不是线路工具（" + name + "）");
                 if (BusLineAutoStopsMod.Instance != null) BusLineAutoStopsMod.Instance.RequestExitLazyMode("离开线路工具");
@@ -511,6 +654,35 @@ namespace BusLineAutoStops.Systems
                 InvalidateStops();
             }
 
+            // —— 需求 2（v0.12.0）：本帧"原版打算干什么"只读一次（applyMode 公开属性，kPhase* 常量注释）。
+            //     拖拽松手那一帧原版已经把 m_State 打回 Default（RouteToolSystem.cs:2039），所以
+            //     判据是"上一帧看到 Modify + 本帧真的 Apply"（DecideDragCommit），读完立刻刷新闩锁。
+            int phase = ToolPhase(route);
+            ToolLineState lineState = SafeLineState(route);
+            bool dragCommit = PlacementDecisions.DecideDragCommit(m_prevLineState, lineState,
+                phase == kPhaseApply, phase == kPhaseClear);
+
+            // 需求 2（v0.12.0）分诊：进出 Modify 态各打一行 —— 每笔拖拽正好两条，不是每帧。
+            // 下一轮实机只要看到 `态 … → Modify` 却没有 `[拖拽落站] …`，就说明"检测没触发"；
+            // 两条都没有、而玩家确实拖了，就说明"懒人模式当时没开"，问题不在拖拽链路上。
+            // 0.11.2 的困局正是这两者分不清（实机日志 2026-10-20 05:48-05:53 全场 0 条 [拖拽落站]，
+            // 而那次会话里懒人模式在 05:52:57 就因为"离开线路工具"自动退出了，拖拽根本不是模组在处理）。
+            if (lineState != m_prevLineState
+                && (lineState == ToolLineState.Modify || m_prevLineState == ToolLineState.Modify))
+            {
+                BusLineAutoStopsMod.log.Info("[线路工具] 态 " + m_prevLineState + " → " + lineState
+                    + " 相位=" + phase + " 本帧判为拖拽提交=" + dragCommit);
+            }
+            // 需求 2（v0.13.0）：新的一笔拖拽开始 → 上一笔记下的"哪条线"立刻作废，
+            // 免得把这一笔的路径点接到上一笔的线路上。
+            if (lineState == ToolLineState.Modify && m_prevLineState != ToolLineState.Modify)
+            {
+                m_dragRoute = Entity.Null;
+                m_dragRouteIndex = -1;
+                m_dragAwayFrames = 0;
+            }
+            m_prevLineState = lineState;
+
             // —— 控制点：公开 API，与工具共享同一份缓冲。读写前先收完它自己的 job。
             NativeList<ControlPoint> cps;
             try
@@ -527,8 +699,55 @@ namespace BusLineAutoStops.Systems
             TrackControlPointCount(cps);
             ResolvePendingCommits(cps);
 
+            // —— 需求 2（v0.12.0）：拖拽松手这一帧 = 原版把线路修改提交（Apply，RouteToolSystem.cs:2025-2052），
+            //     公交站以前正是在这一步悄悄丢掉的（Modify 态控制点恒为 1，TrackControlPointCount 看不见）。
+            //
+            //     **必须排在 TryCurrentPoint 的早退之前**：松手帧原版是"先 Clear 控制点、再重新射线补一个"，
+            //     射线没打中东西时（光标掠过 UI/水面/天空，或者刚好落在没有碰撞体的飘带上）控制点就是空的 ——
+            //     0.12.0 以前的顺序会在下面 `if (!TryCurrentPoint)` 直接 return，这一笔连日志都不会留。
+            //     松手帧没有悬停点不等于没有落点：用上一帧记住的光标真实点（m_lastPos）照样能落。
+            //
+            //     拖拽提交必须赶在 MaintainPreview 之前：本帧 applyMode==Apply，预览幽灵留着就会被
+            //     ApplyObjectsSystem.Create() 顺手转正（不计费校验那一步全跳过），见 ArmDragLanding。
+            bool hoverOk = TryCurrentPoint(cps, out ControlPoint hover);
+            float3 cursor = hoverOk ? CursorGroundPos(hover.m_Position) : m_lastCursor;
+            if (!math.isfinite(cursor.x) || !math.isfinite(cursor.z) || !math.any(cursor != float3.zero))
+                cursor = m_lastCursor;
+            // 有悬停点就记下本帧光标：下一帧若恰好没有悬停点（松手帧常见），这就是落点来源。
+            if (hoverOk && math.any(cursor != float3.zero)) m_lastCursor = cursor;
+
+            m_previewCursorNow = cursor;
+
+            // —— 需求 2（v0.13.0）：拖拽期间把"这一笔动的是哪条线、哪一枚路径点"钉下来。
+            //     Modify 态悬停在既有线路上时 m_OriginalEntity 就是 Route 实体（SnapJob 的 Modify 分支
+            //     在 FindWaypointLocation 早退时会保留它），m_ElementIndex.x 是路径点下标
+            //     （RaycastJobs 把命中路径点的 m_Index 放进 m_CellIndex.x）。松手后原版已经把线路改完、
+            //     没有控制点可改（左键那条路靠 RewriteControlPointAttachment，笔记 #71），
+            //     只能靠这两个值在落地后找回那一枚已经造出来的路径点。
+            if (lineState == ToolLineState.Modify && hoverOk) TryCaptureDragRoute(hover);
+
+            if (dragCommit && math.any(cursor != float3.zero))
+            {
+                ArmDragLanding(cursor);
+                m_previewRefused = true; // 落点处不再原地预览（光标挪走后移动分支会复位闸门）
+            }
+            else if (dragCommit)
+            {
+                // 连上一帧的光标都没有（刚进懒人模式第一帧就松手）：记一笔，下一次不再沉默。
+                BusLineAutoStopsMod.log.Info("[拖拽落站] 跳过：松手帧既没有悬停点也没有上一帧光标");
+            }
+            else if (m_dragLandingArmed)
+            {
+                // —— 需求 2（v0.12.0）补提交：松手那一帧解析不出父级（光标正压在别的站台上，射线与
+                //     Owner 链全指向不可依附的实体）时，这一帧接着解析；光标离开落点、工具又开始新的
+                //     一笔、或等满 kDragRetryMaxFrames 帧就作废（判定在 DecideDragRetry）。
+                //     Apply 帧一律不补喂：那帧喂出去的幽灵会被 ApplyObjectsSystem.Create() 顺手转正
+                //     （不计费、不过校验），宁可让这一帧过去，也不要一座白送的建筑。
+                TryLandDragStop(hoverOk ? hover : default(ControlPoint), phase, lineState);
+            }
+
             // —— 需求 2：落点 = 线路工具自己那个"还没按左键"的路径点
-            if (!TryCurrentPoint(cps, out ControlPoint hover))
+            if (!hoverOk)
             {
                 ResetSettle(now);
                 SettleDwell(false);
@@ -538,7 +757,6 @@ namespace BusLineAutoStops.Systems
 
             // 需求 1（v0.10.0）：本帧的"光标真实点"只取一次（射线结果每帧读一次就够，需求 5），
             // 之后静止判定、沿用判定、喂点全用它 —— 悬停点已经被吸到路中央，横向信息只剩在这儿。
-            float3 cursor = CursorGroundPos(hover.m_Position);
 
             if (math.distance(cursor, m_lastPos) > kMoveEpsilon)
             {
@@ -552,6 +770,7 @@ namespace BusLineAutoStops.Systems
                 m_previewEmptyLogged = false;
                 m_attachFailLogged = false;
                 m_nudgeIndex = 0;
+                m_hintResolved = false;
 
                 // 需求 3（v0.10.0）：动了**不立刻**收幽灵。0.9.0 是"一动就 AddComponent<Deleted>"，
                 // 而幽灵要下一帧才被原版造出来、我们又要等 2 帧才去认领 —— 于是拖鼠标途中每次
@@ -581,10 +800,95 @@ namespace BusLineAutoStops.Systems
 
             SettleDwell(m_settled);
 
-            // 预览"世上只留一枚、丢了才补"（MaintainPreview 里解释为什么不能每帧无条件喂）。
-            if (m_settled && !m_previewRefused) MaintainPreview(hover, cursor);
+            // 拖拽提交 / 补提交已经在本文前面（控制点读完、TryCurrentPoint 早退之前）处理过了 ——
+            // 那一笔必须在松手帧无条件执行，不能受"本帧有没有悬停点"影响。
+
+            // —— 需求 1/3（v0.13.0）：预览的前置闸门（玩家：拖拽前不该模拟生成公交站）。
+            //     · 光标压在既有线路的路径点/路段上（下一次左键 = 进 Modify 拖拽）；
+            //     · 工具已经在 Modify（拖拽中）/ Remove；
+            //     · 光标已进入既有站台的依附范围（原版会把这一笔路径点直接依附到那枚站台上）。
+            //     三种情形都不喂幽灵，而且要把手上的幽灵**收干净**：一枚还带着
+            //     `Game.Tools.Error` 的幽灵会让 `ToolBaseSystem.GetAllowApply()`（:541-543）整帧为假，
+            //     玩家那一笔会被原版悄悄吞掉（实机 2026-10-21 01:08 的"在这个站台放路径点失败"）。
+            //     拖拽落地仍然需要父级，所以抑制期间做一次**只解析、不显示**的记录（NoteLandingHint）。
+            bool hoverRouteElement = hoverOk && HoverOnRouteElement(hover);
+            // 半径那一桩每帧要做一次站台索引查询（3×3 格），只在"幽灵真的可能被喂"的帧才做：
+            // 静止事件（m_settled）或手上还挂着一枚幽灵。其余帧只做那几次组件读。
+            bool hoverExistingStop = hoverOk
+                && IsAttachStopHover(hover, cursor, m_settled || m_previewTemp != Entity.Null || m_previewFed);
+            bool previewOk = !PlacementDecisions.SuppressPreview(lineState, hoverRouteElement, hoverExistingStop);
+            if (previewOk)
+            {
+                // —— 需求 1（v0.12.0）"停着不动也偶尔闪一下"：原版停稳帧会间歇写 Clear（路径重算完成、
+                //     悬停吸附搬家都会走到 ：2206-2229 那几个分支），ToolClearSystem 把整个 Temp 块标
+                //     Deleted（:101），而我们只在静止开始时喂过一次定义 —— 幽灵这回是真死了（vanilla
+                //     自己不闪是因为它每帧重喂定义，Deleted 幽灵当帧就被 GenerateObjectsSystem 回收复用）。
+                //     同帧补喂同一处，让回收链路把它续上（详见 RescuePreviewIfCleared）。
+                if (m_settled && !m_previewRefused) RescuePreviewIfCleared(phase, cursor);
+                // 预览"世上只留一枚、丢了才补"（MaintainPreview 里解释为什么不能每帧无条件喂）。
+                if (m_settled && !m_previewRefused) MaintainPreview(hover, cursor);
+            }
+            else
+            {
+                // Apply 帧上绝不改我们的幽灵（v0.12.1 的崩溃取证：那一帧 AddComponent<Deleted> 会跟
+                // GenerateObjectsSystem 的"Deletes 回收复用"撞同一实体）。那一帧原版自己会清 Temp，
+                // 我们只把闸门关上、下一帧再收。
+                if (phase != kPhaseApply && (m_previewTemp != Entity.Null || m_previewFed)) RetirePreview();
+                if (m_settled) NoteLandingHint(hover, cursor, hoverExistingStop, lineState);
+            }
 
             RefreshStopsIfNeeded(now);
+        }
+
+        /// <summary>
+        /// 需求 1（v0.13.0）：光标是不是压在**既有线路的路径点/路段**上 —— 也就是"下一次左键会进 Modify 拖拽"。
+        /// 判据照抄原版 `Apply()` 的 Default 分支（RouteToolSystem.cs:1908-1912）：
+        /// `HasComponent&lt;Route&gt;(cp.m_OriginalEntity) &amp;&amp; math.any(cp.m_ElementIndex &gt;= 0)`。
+        /// 正在画的那条临时线路（带 Temp）不算：那是在加路径点，不是在拖拽。
+        /// 只读 3 个组件，每帧一次，不扫世界。
+        /// </summary>
+        private bool HoverOnRouteElement(ControlPoint hover)
+        {
+            try
+            {
+                Entity e = hover.m_OriginalEntity;
+                if (e == Entity.Null) return false;
+                if (!math.any(hover.m_ElementIndex >= 0)) return false;
+                if (EntityManager.HasComponent<Temp>(e)) return false;
+                return EntityManager.HasComponent<Route>(e);
+            }
+            catch (Exception) { return false; }
+        }
+
+        /// <summary>
+        /// 需求 3（v0.13.0）：光标是不是已经落进既有同类站台的依附范围。
+        /// ① 权威判据：工具自己解析出来的实体就是站台（`FindWaypointLocation` 的 ConnectedRoute 分支，
+        ///    RouteToolSystem.cs:277-280 —— 命中即"这一笔路径点会直接依附它"）。
+        /// ② 兜底：光标 <see cref="kStopAttachRadius"/> 米内有同类站台（站台索引查询，无分配）。
+        /// </summary>
+        private bool IsAttachStopHover(ControlPoint hover, float3 cursor, bool useRadius = true)
+        {
+            if (IsSameKindStop(hover.m_OriginalEntity)) return true;
+            if (!useRadius) return false;
+            float nearDist;
+            return m_stops.Nearest(EntityManager, cursor, kStopAttachRadius, out nearDist) != Entity.Null;
+        }
+
+        /// <summary>这枚实体是不是"既有同类站台"（带 ConnectedRoute 缓冲的 BusStop/TramStop，且不是 Temp/已删）。</summary>
+        private bool IsSameKindStop(Entity e)
+        {
+            try
+            {
+                if (e == Entity.Null || !EntityManager.Exists(e)) return false;
+                if (EntityManager.HasComponent<Temp>(e)) return false;
+                if (EntityManager.HasComponent<Game.Common.Deleted>(e)) return false;
+                if (!EntityManager.HasBuffer<ConnectedRoute>(e)) return false;
+                TransportKind kind = LazyModeState.ModeKind;
+                if (kind == TransportKind.Bus) return EntityManager.HasComponent<BusStop>(e);
+                if (kind == TransportKind.Tram) return EntityManager.HasComponent<TramStop>(e);
+                return false;
+            }
+            catch (Exception) { return false; }
         }
 
         /// <summary>
@@ -772,14 +1076,38 @@ namespace BusLineAutoStops.Systems
 
                 if (ConvertTempToStop(temp))
                 {
-                    m_placed.Add(temp);
                     float3 landed = landedAt;
                     m_stops.Add(temp, landed);
-                    RewriteControlPointAttachment(cps, p.Position, temp, landed);
-                    // 需求 1 的实机取证：喂点与落点的有符号横向距离必须同号（同侧）。
-                    BusLineAutoStopsMod.log.Info("[落点提交] @(" + Pos(landed) + ") 资产已落地（本次第 "
-                        + m_placed.Count + " 个） 喂点横向=" + LateralText(p.Parent, p.FeedPos, EntityManager)
-                        + " 落点横向=" + LateralText(p.Parent, landed, EntityManager));
+                    if (p.DragCommit && !PlacementDecisions.DragCommitIsUndoable())
+                    {
+                        // 需求 2（v0.12.0）：拖拽落地的那一笔**不进 m_placed** —— 每次拖拽新增都算完成，
+                        // 与原版一致不允许右键回退；右键撤点 / 退出清理都碰不到它（m_placed 是撤销栈）。
+                        // 控制点改写**不做**：此刻 cps 里只有 1 个悬停点（Modify 态控制点恒为 1，
+                        // TrackControlPointCount 注释），改它的 m_OriginalEntity 只会让原版把我们的站台
+                        // 复制成 hover 副本（"老站凭空消失"那类毛病）。
+                        //
+                        // 需求 2（v0.13.0）：改成**事后接上那一枚已经造出来的路径点** —— 玩家报
+                        // "拖拽结束了、站台也生成了，但这个拖拽的路径点没有依附到这个公交站"。
+                        // 左键画线那条路靠改写控制点让原版把 m_Connection 写进定义（笔记 #71），
+                        // 拖拽这条路松手时原版已经把线路改完，只能按原版自己的数据形状补：
+                        // `Connected` + `VehicleTiming` + 站台 `ConnectedRoute` + `Updated`
+                        // （＝ ApplyRoutesSystem.Update(pos, connected) + WaypointConnectionSystem
+                        //    的 Created 分支所做的事），剩下的车道/路径重算全交回原版。
+                        BusLineAutoStopsMod.log.Info("[拖拽落站] @(" + Pos(landed)
+                            + ") 站台已落地（拖拽新增，不可右键回退）");
+                        AttachDraggedWaypoint(temp, p.DragRoute, p.DragRouteIndex, p.Position, landed);
+                        m_dragRoute = Entity.Null;   // 这一笔用完了，别让下一笔误用
+                        m_dragRouteIndex = -1;
+                    }
+                    else
+                    {
+                        m_placed.Add(temp);
+                        RewriteControlPointAttachment(cps, p.Position, temp, landed);
+                        // 需求 1 的实机取证：喂点与落点的有符号横向距离必须同号（同侧）。
+                        BusLineAutoStopsMod.log.Info("[落点提交] @(" + Pos(landed) + ") 资产已落地（本次第 "
+                            + m_placed.Count + " 个） 喂点横向=" + LateralText(p.Parent, p.FeedPos, EntityManager)
+                            + " 落点横向=" + LateralText(p.Parent, landed, EntityManager));
+                    }
                 }
             }
         }
@@ -936,7 +1264,29 @@ namespace BusLineAutoStops.Systems
                     }
                     return;
                 }
+                // 需求 3（v0.13.0）：先摘 Error 再收（见 ClearGhostError：Deleted 实体要到帧末才销毁，
+                // 中间那几帧的 Error 会把玩家的一整笔顶掉）。
+                ClearGhostError(e);
                 EntityManager.AddComponent<Game.Common.Deleted>(e);
+            }
+            catch (Exception) { }
+        }
+
+        /// <summary>
+        /// 需求 3（v0.13.0）：收幽灵时顺手把原版挂上的 `Game.Tools.Error` 摘掉。
+        ///
+        /// `ToolBaseSystem.GetAllowApply()`（:541-543）查的是**全世界**的 Error（`m_ErrorQuery`
+        /// 就是 `ReadOnly&lt;Error&gt;` 一个条件），而带 Deleted 的实体要到帧末 Cleanup 才销毁 ——
+        /// 中间这一两帧里，我们那枚"放不下的预览幽灵"照样会把玩家的左键/松手整帧顶掉，
+        /// 正是玩家说的"在这个站台放路径点会失败"。摘掉 Error 只影响这枚马上要死的幽灵，
+        /// 不碰任何别的实体、不改校验结论（下一帧它已经不在了）。
+        /// </summary>
+        private void ClearGhostError(Entity e)
+        {
+            try
+            {
+                if (EntityManager.HasComponent<Game.Tools.Error>(e))
+                    EntityManager.RemoveComponent<Game.Tools.Error>(e);
             }
             catch (Exception) { }
         }
@@ -1106,6 +1456,528 @@ namespace BusLineAutoStops.Systems
                 + " 光标横向=" + LateralText(parent, cursor, EntityManager)
                 + (Nudge() != 0f ? " 沿路让位" + Nudge().ToString("0.0") + "m" : "")
                 + " 索引=" + m_stops.Count);
+        }
+
+        /// <summary>
+        /// 需求 1（v0.12.0）：停稳时原版若在本帧写 Clear，同帧把同一处补喂一次，让幽灵续命。
+        ///
+        /// 为什么"停着不动也偶尔会闪"（玩家 0.11.2 反馈）：<c>RouteToolSystem.Update</c> 在停稳帧
+        /// 仍会间歇写 <c>applyMode = Clear</c> —— 路径重算刚完成（:2191-2197 的
+        /// <c>flag = CheckPathUpdates()</c>）、悬停吸附把控制点搬了家（:2182-2183）之后的
+        /// :2206/:2213/:2220/:2229 都会走 Clear。那一刻 <c>ToolOutputSystem</c> 嵌套跑
+        /// ClearTool，<c>ToolClearSystem.ClearEntitiesJob</c>（:101）把**整块 Temp 标 Deleted**，
+        /// 我们那一枚预览幽灵也在里面。原版自己不闪，是因为它每帧 DestroyDefinitions 之后
+        /// 立刻重喂定义（:2146-2235），被标 Deleted 的幽灵当帧就被
+        /// <c>GenerateObjectsSystem.m_DeletedQuery</c>（Object+Deleted+Temp+PrefabRef，:1734）
+        /// 收进 <c>FillOldObjectsJob</c>（:119-137），再由 <c>CollectCreationDataJob</c> 按
+        /// {Prefab, SubPrefab, Original, Owner} + 最近位置（:745-783）配给我们新喂的定义，
+        /// <c>CreateObject(existing)</c>（:1103-1130）拿掉 Deleted、补 Updated、重设 Transform ——
+        /// 同一个实体原地复活。我们只在静止开始时喂过一次定义，续不上 → 幽灵真死 → 闪一下。
+        ///
+        /// 补喂**严格同位置、同父级、同资产**（玩家看见哪儿就还放哪儿），且不动
+        /// <c>m_nudgeIndex</c>（让位档是 FeedPreview 的事，这里挪一格会让预览自己走位）。
+        /// 只标 <c>m_previewFed</c>，不碰 m_previewTemp —— 认领仍由 ClaimPendingPreview 逐帧追。
+        /// 触发条件收敛在 <see cref="PlacementDecisions.ShouldRescueFeed"/>（T3 已钉）。
+        /// </summary>
+        private void RescuePreviewIfCleared(int phase, float3 cursor)
+        {
+            bool outstanding = m_previewFed || m_previewTemp != Entity.Null;
+            bool sameSpot = m_hasPreviewSpot && math.distance(m_previewSpot, cursor) <= kPreviewKeepRadius;
+            if (!PlacementDecisions.ShouldRescueFeed(phase == kPhaseClear, outstanding, sameSpot)) return;
+            if (m_previewPrefab == Entity.Null) return;
+
+            // 结构改动前先收自己的 job（开发笔记 #63/#64：握着只读 handle 改结构 = 原生崩溃那一类）。
+            FlushPendingJobs();
+            FeedStopDefinition(m_previewPrefab, m_previewSpot, m_previewParent, optional: false);
+            PlacementDecisions.RescueApplied(ref m_previewFed, ref m_previewWaitFrames);
+            m_rescueCount++;
+            if (!m_rescueLogged)
+            {
+                m_rescueLogged = true;
+                BusLineAutoStopsMod.log.Info("[预览续命] @(" + Pos(m_previewSpot)
+                    + ") 本帧原版写 Clear，同帧补喂同一处（本场第 " + m_rescueCount + " 次）");
+            }
+        }
+
+        /// <summary>
+        /// 需求 2（v0.12.0）：拖拽松手那一帧把公交站放下去。
+        ///
+        /// 以前为什么放不了：拖拽 = <c>RouteToolSystem.State.Modify</c>（:1910 从 Default 进，
+        /// 射线命中带 <c>m_ElementIndex &gt;= 0</c> 的线路段），松手走 <c>Apply()</c> 的 Modify 分支
+        /// （:2003-2056）：先 <c>m_State = State.Default</c>（:2039）再 <c>m_ControlPoints.Clear()</c>
+        /// （:2040）。我们的 <c>TrackControlPointCount</c> 只看控制点数量差，而 Modify 态恒为 1 个、
+        /// Clear 之后又补回 1 个（:2041-2044），差值永远是 0 → 我们从头到尾没被通知过，
+        /// 玩家看到的预览幽灵只是"原版 Clear 之前我们自己喂的那一枚"，松手后它被原版的
+        /// Apply 流程接管/清掉，站台自然落不了地。
+        ///
+        /// 本帧的正确做法（顺序不能换）：
+        /// 1) <c>RetirePreview()</c> 先把预览幽灵收走。本帧 <c>applyMode == Apply</c>，而
+        ///    <c>ApplyObjectsSystem.HandleTempEntitiesJob</c> 的 m_TempQuery（Temp+Object，:920）
+        ///    **不排除 Deleted**，会把还活着的、m_Original 为 Null 的幽灵直接
+        ///    <c>Create()</c> 成一座真建筑（:669-685：去掉 Temp/Animation/BackSide，加
+        ///    Applied/Created/Updated）—— 不经校验、不经查重、不经依附改写，还会被
+        ///    <c>ToolApplySystem.ApplyEntitiesJob</c>（:42-74）按 m_Cost 计费。绝不能让预览
+        ///    在 Apply 帧上自己转正 —— 所以本帧先补 <c>TempFlags.Cancel</c> 再收
+        ///    （<see cref="CancelTempsOnApplyFrame"/>）：只写 Deleted 既挡不住转正、也挡不住计费。
+        /// 2) 在松手处喂一枚**新的**提交定义，交给 ResolvePendingCommits 走完整闸门
+        ///    （Error 校验 / 同类查重 / 转正 / 记账），与原版左键点击完全同一条管线。
+        /// 3) 记 <c>DragCommit = true</c>：落地后不进 m_placed（每次拖拽新增即完成，原版也不给
+        ///    右键回退 —— <see cref="PlacementDecisions.DragCommitIsUndoable"/>）。
+        ///
+        /// 落点用本帧的悬停点（工具在 Apply() 里 Clear 后补进来的松手处射线结果），
+        /// **不新增射线读取**（需求 5：全场只有 TryRaycast 一处 GetRaycastResult，pack 钉子）。
+        /// </summary>
+        private void ArmDragLanding(float3 cursor)
+        {
+            // 需求 2（v0.12.1）：**松手帧只记账，不动世界**。
+            //
+            // v0.12.0 的写法在松手帧（applyMode == Apply）就收幽灵 + 喂新定义，实机（2026-10-20 22:07:33）
+            // 拖拽结束瞬间**原生崩溃**（Player.log: "Native Crash Reporting / Got a UNKNOWN while
+            // executing native code" + 空托管栈）。机制上是两类改动撞在同一帧：
+            //   ① 我们给预览幽灵补 TempFlags.Cancel 后又 AddComponent<Deleted>；
+            //   ② 同一帧 GenerateObjectsSystem 的 m_DeletedQuery（Object+Deleted+Temp+PrefabRef，:1734）
+            //      正是拿"带 Deleted 的幽灵"当**可复用的旧物件**，按 {Prefab, 最近位置} 配对后对同一实体
+            //      RemoveComponent<Deleted>（:1103-1130）—— 而我们喂的新定义口径恰好是**同一个 prefab +
+            //      同一个位置**（沿用预览父级 = 同一处人行道），于是两条路径对同一实体做互斥的组件增删。
+            // 这类"同帧互斥结构改动"在本项目里就是空托管栈原生崩溃的同义词（笔记 #63/#89）。
+            //
+            // 所以拆成两拍：
+            //   · **松手帧**：只写 TempFlags.Cancel（SetComponentData，非结构改动；挡住 Apply 帧的免费转正），
+            //     把落点/父级/资产记进托管字段，然后 return —— 不建实体、不改结构、不 Complete 依赖。
+            //   · **下一帧（非 Apply）**：TryLandDragStop 才收幽灵 + 喂定义 + 排待提交。那一帧与
+            //     "预览喂定义"完全同构（预览从来没崩过），风险归零；代价只有一帧（约 16ms）。
+            ArmDragLandingFields(cursor);
+
+            // 唯一允许在 Apply 帧做的事：补 Cancel 位（非结构改动）。
+            CancelTempsOnApplyFrame();
+
+            BusLineAutoStopsMod.log.Info("[拖拽落站] @(" + Pos(cursor) + ") 松手：已排队，本帧不动世界"
+                + "（下一帧落地）｜预览父级="
+                + (m_dragLandingSeenParent != Entity.Null ? Describe(m_dragLandingSeenParent) : "无（现场再解析）"));
+        }
+
+        /// <summary>
+        /// 把"玩家正看着的那枚预览"的路数存进补提交字段。
+        /// 预览能显示，就说明上一帧我们在同一处**已经成功解析出过一个合法父级**
+        /// （FeedPreview 里解析失败是不会喂的）—— 那是玩家脚下这条路最可靠的答案。
+        /// 0.11.x/0.12.0 的死结正是这里：以前 RetirePreview() 会把这些字段清空，把唯一线索自己删了。
+        /// </summary>
+        private void ArmDragLandingFields(float3 cursor)
+        {
+            Entity seenParent = m_previewParent;
+            float3 seenSpot = m_previewSpot;
+            bool seenUsable = m_hasPreviewSpot && seenParent != Entity.Null
+                && math.distance(seenSpot, cursor) <= kPreviewReuseRadius;
+
+            m_dragLandingArmed = true;
+            m_dragLandingFrames = 0;
+            m_dragAwayFrames = 0;
+            m_dragLandingSpot = cursor;
+            m_dragLandingSeenParent = seenUsable ? seenParent : Entity.Null;
+            m_dragLandingSeenSpot = seenSpot;
+            m_dragLandingPrefab = Entity.Null;
+            if (TryGetStopPrefab(out PrefabBase _, out Entity prefab)) m_dragLandingPrefab = prefab;
+        }
+
+        /// <summary>
+        /// 需求 2（v0.13.0）：拖拽期间记下"这一笔改的是哪条线、压在哪一枚路径点上"。
+        /// Drag 态悬停在既有线路上时 `m_OriginalEntity` 就是 Route 实体、`m_ElementIndex.x` 是路径点下标；
+        /// 只在还没记下时写一次（第一帧最准），并且只认**真实**线路（Temp 是正在画的那条，不算）。
+        /// </summary>
+        private void TryCaptureDragRoute(ControlPoint hover)
+        {
+            if (m_dragRoute != Entity.Null) return;
+            try
+            {
+                Entity e = hover.m_OriginalEntity;
+                // 兜底：抓握那一帧的悬停点偶尔已经被 SnapJob 改写成路/站台（FindWaypointLocation 会沿
+                // Owner 链走，走空了就置 Null），这时用射线父级补一次 —— 它正是线路飘带那枚 Route 实体。
+                if (!IsRealRoute(e)) e = RaycastOwner();
+                if (!IsRealRoute(e)) return;
+                m_dragRoute = e;
+                m_dragRouteIndex = hover.m_ElementIndex.x;
+                BusLineAutoStopsMod.log.Info("[拖拽落站] 记下这一笔的线路 " + Describe(e)
+                    + " 路径点下标=" + m_dragRouteIndex);
+            }
+            catch (Exception) { }
+        }
+
+        /// <summary>成型的线路实体（Route + RouteWaypoint 缓冲，且不是正在画的那条 Temp）。</summary>
+        private bool IsRealRoute(Entity e)
+        {
+            try
+            {
+                if (e == Entity.Null || !EntityManager.Exists(e)) return false;
+                if (EntityManager.HasComponent<Temp>(e)) return false;
+                if (!EntityManager.HasComponent<Route>(e)) return false;
+                return EntityManager.HasBuffer<RouteWaypoint>(e);
+            }
+            catch (Exception) { return false; }
+        }
+
+        /// <summary>
+        /// 需求 1（v0.13.0）：抑制预览时"只解析、不显示"地记一次父级。
+        ///
+        /// 为什么还要解析：拖拽落地（<see cref="ArmDragLandingFields"/>）首选"玩家眼前那枚预览挂的路"
+        /// —— 而 v0.13.0 起拖拽前/拖拽中**不显示**预览了，这条线索得在这里补上，
+        /// 否则松手帧一旦解析不出父级（光标压在别的站台/飘带上）就整笔落空。
+        /// 每个静止事件只做一次（kStopAttachRadius 内一次索引查询 + 几次组件读），不建实体、不扫世界。
+        /// </summary>
+        private void NoteLandingHint(ControlPoint hover, float3 cursor, bool onExistingStop, ToolLineState state)
+        {
+            if (m_hintResolved) return;
+            m_hintResolved = true;
+            // 0) 光标就在既有站台上：原版会直接依附它，这一笔不需要站台落点，也不需要父级。
+            if (onExistingStop) return;
+            // 1) 只有拖拽态才值得记：Default 态的抑制是"光标在路径点上"，那时按左键是拖拽，
+            //    拖起来之后每一帧还会再进来记一次（那时才是真正的落点父级）。
+            if (state != ToolLineState.Modify) return;
+            Entity parent;
+            string why;
+            if (!TryResolveLanding(cursor, hover.m_OriginalEntity, out parent, out why)) return;
+            m_previewSpot = SlidePos(cursor, parent, 0f);
+            m_previewParent = parent;
+            m_hasPreviewSpot = true;
+            if (!m_hintLogged)
+            {
+                m_hintLogged = true;
+                BusLineAutoStopsMod.log.Info("[预览抑制] 拖拽中不显示幽灵，只记父级 ← " + why);
+            }
+        }
+
+        /// <summary>
+        /// 拖拽落点真正喂出去（松手帧与补提交帧共用）：收掉手上可能还在的预览幽灵 → 喂提交定义
+        /// → 排一笔 <c>DragCommit</c> 待提交，交给 ResolvePendingCommits 走完整闸门
+        /// （Error 校验 / 同类查重 / 转正 / 记账），与原版左键点击完全同一条管线。
+        /// 落地后**不进 m_placed**：拖拽一次就算完成，右键撤点 / 退出清理都不回退它。
+        /// </summary>
+        private void FeedDragCommit(float3 spot, Entity prefab, PrefabBase pb,
+            Entity parent, string why)
+        {
+            // 补提交帧上预览可能已经自己喂了一枚同一处的幽灵：先收走，世上只留一枚，
+            // FindCommitTemp 才不会找错人（与左键那条分支同一条规矩）。
+            FlushPendingJobs();
+            if (m_previewTemp != Entity.Null || m_previewFed) RetirePreview();
+            PlacementDecisions.DragSettled(ref m_previewFed, ref m_previewWaitFrames);
+
+            float3 feedPos = SlidePos(spot, parent, Nudge());
+            FeedStopDefinition(prefab, feedPos, parent, optional: false);
+            m_pending.Add(new PendingCommit
+            {
+                Position = spot,
+                FeedPos = feedPos,
+                Temp = Entity.Null,
+                Parent = parent,
+                Prefab = prefab,
+                WaitedFrames = 0,
+                DragCommit = true,
+                DragRoute = m_dragRoute,
+                DragRouteIndex = m_dragRouteIndex,
+            });
+            // 幽灵刚被收走，认领侧不用再等；预览状态清空后 MaintainPreview 会按"丢了才补"重建。
+            m_rescueLogged = false;
+            BusLineAutoStopsMod.log.Info("[拖拽落站] @(" + Pos(spot) + ") 资产="
+                + StationAssets.SafeName(pb) + " ← " + why
+                + " 喂点横向=" + LateralText(parent, feedPos, EntityManager));
+        }
+
+        /// <summary>
+        /// 需求 2（v0.13.0）：把这一笔拖拽动到的路径点接到刚落地的站台上。
+        ///
+        /// 为什么必须事后补：拖拽走 Modify 态，松手那一帧原版就把线路提交完了
+        /// （RouteToolSystem.cs:2025-2052 → ApplyRoutesSystem 把临时线路的 WaypointDefinition 写回
+        /// 真实路径点，ApplyRoutesSystem.cs:322-350），路径点是在**站台出现之前**造出来的，
+        /// 它的 `Connected` 只能是空 —— 于是玩家看到"站台生成了，但路径点没依附上去、公交不靠站"。
+        /// 左键画线那条路能靠改写控制点让定义带上连接（笔记 #71），拖拽没有控制点可改，
+        /// 只能照原版自己的数据形状把连接补上（三处，都是原版自己会写的那种）：
+        ///   · 路径点：`Connected`（+ `VehicleTiming` —— TransportLinePrefab 里"连站台的路径点"archetype
+        ///     就是 Waypoint + Connected + VehicleTiming）并补 `Updated`；
+        ///   · 站台：把这一枚路径点补进自己的 `ConnectedRoute` 缓冲（WaypointConnectionSystem 只在
+        ///     Created 那一帧 Add，事后再加它不管，所以这一笔得我们自己写；同样是
+        ///     ApplyRoutesSystem.PatchTempReferencesJob 的写法规矩）；
+        ///   · 之后 `WaypointConnectionSystem.FindWaypointConnectionsJob` 会照 `Connected` 重算
+        ///     AccessLane / RouteLane、把路径点搬到站台位置、发 PathTargetMoved 并重算路段路径
+        ///     （WaypointConnectionSystem.cs:1170-1410）—— 全是原版自己的逻辑，我们不接管。
+        /// 只在本笔拖拽的那条线里找那一枚路径点（下标优先、落点最近兜底），找不到就只留日志、不猜。
+        /// </summary>
+        private void AttachDraggedWaypoint(Entity stop, Entity route, int routeIndex, float3 spot, float3 landed)
+        {
+            try
+            {
+                if (route == Entity.Null)
+                {
+                    BusLineAutoStopsMod.log.Info("[拖拽依附] 这一笔没记下线路实体 → 路点留在路上（站台已是真实建筑）");
+                    return;
+                }
+                if (!EntityManager.Exists(route) || EntityManager.HasComponent<Game.Common.Deleted>(route))
+                {
+                    BusLineAutoStopsMod.log.Info("[拖拽依附] 线路实体已不在世（" + Describe(route) + "）→ 跳过");
+                    return;
+                }
+                if (EntityManager.HasComponent<Temp>(route) || !EntityManager.HasBuffer<RouteWaypoint>(route))
+                {
+                    BusLineAutoStopsMod.log.Info("[拖拽依附] " + Describe(route) + " 不是成型的线路 → 跳过");
+                    return;
+                }
+
+                // 结构改动前先把在途 job 收干（本类既有的硬规矩；下面要 AddComponent / 改缓冲）。
+                FlushPendingJobs();
+
+                float3 waypointPos;
+                Entity waypoint = FindDraggedWaypoint(route, routeIndex, spot, out waypointPos);
+                bool found = waypoint != Entity.Null;
+
+                bool onThisStop = false;
+                bool elsewhere = false;
+                if (found && EntityManager.HasComponent<Connected>(waypoint))
+                {
+                    Connected old = EntityManager.GetComponentData<Connected>(waypoint);
+                    onThisStop = old.m_Connected == stop;
+                    elsewhere = old.m_Connected != Entity.Null && !onThisStop
+                        && EntityManager.Exists(old.m_Connected)
+                        && !EntityManager.HasComponent<Game.Common.Deleted>(old.m_Connected);
+                }
+                if (!PlacementDecisions.ShouldAttachDraggedWaypoint(found, onThisStop, elsewhere))
+                {
+                    if (!found)
+                    {
+                        BusLineAutoStopsMod.log.Info("[拖拽依附] 线路 " + Describe(route)
+                            + " 里找不到落点 ±" + kDragAttachRadius.ToString("0") + "m 内的路径点"
+                            + "（站台落位=(" + Pos(landed) + ")）→ 路点留在路上");
+                    }
+                    else
+                    {
+                        BusLineAutoStopsMod.log.Info("[拖拽依附] 路点 " + Describe(waypoint)
+                            + (onThisStop ? " 已经连着这枚站台" : " 已依附在别的实体上") + " → 不动");
+                    }
+                    return;
+                }
+
+                if (!EntityManager.HasComponent<Connected>(waypoint))
+                {
+                    // 原版 archetype：Connected 与 VehicleTiming 一起加（RoutePrefab.LateInitialize 的
+                    // hashSet3 = Waypoint+Connected，TransportLinePrefab.GetArchetypeComponents 再补
+                    // VehicleTiming）。一次结构改动补齐，别分两次。
+                    EntityManager.AddComponent(waypoint, EntityManager.HasComponent<VehicleTiming>(waypoint)
+                        ? new ComponentTypeSet(ComponentType.ReadWrite<Connected>())
+                        : new ComponentTypeSet(ComponentType.ReadWrite<Connected>(), ComponentType.ReadWrite<VehicleTiming>()));
+                }
+                EntityManager.SetComponentData(waypoint, new Connected(stop));
+                if (!EntityManager.HasComponent<Updated>(waypoint)) EntityManager.AddComponent<Updated>(waypoint);
+                int added = AddStopRouteReference(stop, waypoint);
+
+                BusLineAutoStopsMod.log.Info("[拖拽依附] 路点 " + Describe(waypoint) + " @(" + Pos(waypointPos)
+                    + ") → 依附=" + Describe(stop) + "（站台缓冲+" + added
+                    + "；原版会照这条连接重算车道与路径）");
+            }
+            catch (Exception e)
+            {
+                BusLineAutoStopsMod.log.Warn("[拖拽依附] 失败（站台已建成，路点留在路上）"
+                    + e.GetType().Name + "：" + e.Message);
+            }
+        }
+
+        /// <summary>
+        /// 在本笔拖拽的那条线里找出"被拖动的这一枚路径点"：
+        /// ① 拖拽前记下的 `RouteWaypoint` 下标（原版把被拖的路径点原地更新 —— ApplyRoutesSystem.Update
+        ///    写的是 `temp.m_Original`，实体和下标都不变，这是最准的一条）；
+        /// ② 拖路段会插入新点：按"离拖拽落点最近"找（只在这一条线自己的缓冲里，几条到几十条，不扫世界）。
+        /// 两个入口都要过同一道位置闸：路径点必须还在落点 <see cref="kDragAttachRadius"/> 米内。
+        /// </summary>
+        private Entity FindDraggedWaypoint(Entity route, int index, float3 spot, out float3 pos)
+        {
+            pos = default(float3);
+            DynamicBuffer<RouteWaypoint> wps = EntityManager.GetBuffer<RouteWaypoint>(route);
+            if (index >= 0 && index < wps.Length)
+            {
+                Entity cand = wps[index].m_Waypoint;
+                float3 candPos;
+                if (IsWaypointNear(cand, spot, out candPos))
+                {
+                    pos = candPos;
+                    return cand;
+                }
+            }
+            Entity best = Entity.Null;
+            float bestD = float.MaxValue;
+            float3 bestPos = default(float3);
+            for (int i = 0; i < wps.Length; i++)
+            {
+                Entity cand = wps[i].m_Waypoint;
+                float3 candPos;
+                if (!IsWaypointNear(cand, spot, out candPos)) continue;
+                float d = math.distance(candPos.xz, spot.xz);
+                if (d >= bestD) continue;
+                bestD = d;
+                best = cand;
+                bestPos = candPos;
+            }
+            pos = bestPos;
+            return best;
+        }
+
+        private bool IsWaypointNear(Entity e, float3 spot, out float3 pos)
+        {
+            pos = default(float3);
+            try
+            {
+                if (e == Entity.Null || !EntityManager.Exists(e)) return false;
+                if (!EntityManager.HasComponent<Waypoint>(e)) return false;
+                if (EntityManager.HasComponent<Game.Common.Deleted>(e)) return false;
+                if (!TryEntityPos(e, out pos)) return false;
+                return math.distance(pos.xz, spot.xz) <= kDragAttachRadius;
+            }
+            catch (Exception) { return false; }
+        }
+
+        /// <summary>
+        /// 站台侧缓冲：把这一枚路径点记进 `ConnectedRoute`（不重复加）。
+        /// 返回真正加进去的条数（0/1），用来进日志 —— 加不进去（资产缺缓冲）也别装作成功。
+        /// </summary>
+        private int AddStopRouteReference(Entity stop, Entity waypoint)
+        {
+            try
+            {
+                if (!EntityManager.HasBuffer<ConnectedRoute>(stop))
+                {
+                    if (!m_stopBufferWarned)
+                    {
+                        m_stopBufferWarned = true;
+                        BusLineAutoStopsMod.log.Warn("[拖拽依附] 站台没有 ConnectedRoute 缓冲（资产缺件？）"
+                            + " → 只写路径点侧连接");
+                    }
+                    return 0;
+                }
+                DynamicBuffer<ConnectedRoute> buf = EntityManager.GetBuffer<ConnectedRoute>(stop);
+                for (int i = 0; i < buf.Length; i++)
+                {
+                    if (buf[i].m_Waypoint == waypoint) return 0;
+                }
+                buf.Add(new ConnectedRoute(waypoint));
+                return 1;
+            }
+            catch (Exception) { return 0; }
+        }
+
+        /// <summary>
+        /// 需求 2（v0.12.1）：落地成功后与预览喂定义同构（见 TryLandDragStop / ArmDragLanding）。
+        /// 每帧只做一次父级解析 + 一次就地查重（组件读 + 索引查询），不建实体、不扫世界、不新增
+        /// 射线读取。判据全在 <see cref="PlacementDecisions.DecideDragRetry"/>：光标跑开落点、
+        /// 工具又开始新的一笔、或等满 <see cref="kDragRetryMaxFrames"/> 帧就作废。
+        /// </summary>
+        /// <summary>
+        /// 需求 2（v0.12.1）：松手后的第一个"安静帧"才真正落地。
+        /// 判据全在 <see cref="PlacementDecisions.DecideDragRetry"/>：Apply 帧一律 Wait（那一帧做结构改动
+        /// 正是 v0.12.0 崩掉的那一帧）、光标跑开 / 工具开始新的一笔 / 等满预算就作废，
+        /// 解析出父级且帧安静才 Commit。
+        /// 每帧成本：一次 IsAttachableParent（组件读）+ 失败路径上一次索引查询；不扫世界、不新增射线读取。
+        /// </summary>
+        private void TryLandDragStop(ControlPoint hover, int phase, ToolLineState lineState)
+        {
+            m_dragLandingFrames++;
+            bool awayNow = math.distance(m_previewCursorNow.xz, m_dragLandingSpot.xz) > kDragRetryRadius;
+            // 需求 2（v0.13.0）：松手帧原版先 Clear 控制点再重新射线补一个（RouteToolSystem.cs:2039-2048），
+            // 采样点会跳 1~2 帧 —— 连续 kDragAwayGraceFrames 帧都不在落点才算"玩家走了"
+            // （0.12.1 实机 2026-10-21 01:08:28 就是被这一跳骗掉整整一笔拖拽：28ms 后报"光标已离开落点"）。
+            m_dragAwayFrames = awayNow ? m_dragAwayFrames + 1 : 0;
+            bool movedAway = PlacementDecisions.DragCursorLeft(m_dragAwayFrames, kDragAwayGraceFrames);
+            bool toolBusy = lineState != ToolLineState.Default;
+
+            // 需求 3（v0.13.0）：松手处本来就落在既有同类站台的依附范围里 → 原版会把这一笔路径点
+            // 直接依附到那枚站台上，这里**不新建**（新建只会叠出第二枚站台，还必然被 4m 查重挡回去）。
+            if (IsAttachStopHover(hover, m_dragLandingSpot))
+            {
+                m_dragLandingArmed = false;
+                m_dragLandingSeenParent = Entity.Null;
+                BusLineAutoStopsMod.log.Info("[拖拽落站] @(" + Pos(m_dragLandingSpot)
+                    + ") 松手处就在既有站台的依附范围内（工具父级=" + Describe(hover.m_OriginalEntity)
+                    + "）→ 交给原版直接依附，不再新建");
+                return;
+            }
+
+            // ① 先认"玩家眼前那枚预览"挂的那条路（只在落点旁边才认；玩家走开了就不该拿旧路乱放）。
+            Entity parent = Entity.Null;
+            string why = "";
+            bool resolved = false;
+            if (m_dragLandingSeenParent != Entity.Null
+                && math.distance(m_dragLandingSeenSpot.xz, m_dragLandingSpot.xz) <= kPreviewReuseRadius
+                && IsAttachableParent(m_dragLandingSeenParent))
+            {
+                parent = m_dragLandingSeenParent;
+                why = "沿用玩家眼前那枚预览的父级 " + Describe(parent);
+                resolved = true;
+            }
+            // ② 松手那处再现场解析一次（光标在空路上时这条最干脆）。
+            else if (TryResolveLanding(m_dragLandingSpot, hover.m_OriginalEntity, out parent, out why))
+            {
+                resolved = true;
+            }
+
+            PlacementDecisions.DragRetryOutcome verdict = PlacementDecisions.DecideDragRetry(
+                resolved, movedAway, toolBusy, phase == kPhaseApply, m_dragLandingFrames, kDragRetryMaxFrames);
+            if (verdict == PlacementDecisions.DragRetryOutcome.Wait) return;
+
+            m_dragLandingArmed = false;
+            m_dragLandingSeenParent = Entity.Null;
+            if (verdict == PlacementDecisions.DragRetryOutcome.Abort)
+            {
+                BusLineAutoStopsMod.log.Info("[拖拽落站] @(" + Pos(m_dragLandingSpot) + ") 补提交放弃："
+                    + (movedAway ? "光标已离开落点"
+                        : toolBusy ? "线路工具已开始新的一笔"
+                        : "等满 " + kDragRetryMaxFrames + " 帧仍解析不到父级（" + why + "）"));
+                return;
+            }
+
+            if (!TryGetStopPrefab(out PrefabBase pb, out Entity prefab)
+                || (m_dragLandingPrefab != Entity.Null && prefab != m_dragLandingPrefab))
+            {
+                BusLineAutoStopsMod.log.Info("[拖拽落站] @(" + Pos(m_dragLandingSpot) + ") 补提交放弃：站台资产已换");
+                return;
+            }
+
+            // —— 到这里才做真正的世界改动，而且是在一个**非 Apply 帧**上（与预览喂定义完全同构）。
+            FlushPendingJobs();
+            RetirePreview();
+            PlacementDecisions.DragSettled(ref m_previewFed, ref m_previewWaitFrames);
+            m_previewRefused = true; // 真实站台马上落地，这一处不再显示预览幽灵
+            FeedDragCommit(m_dragLandingSpot, prefab, pb, parent,
+                why + "（补提交第 " + m_dragLandingFrames + " 帧）");
+        }
+
+        /// <summary>
+        /// 需求 2（v0.12.0）：Apply 帧上给我们的幽灵补一枚 <c>TempFlags.Cancel</c>。
+        ///
+        /// 为什么只写 Deleted 不够：本帧 <c>applyMode == Apply</c>，嵌套的 ApplyTool 里
+        /// <c>ApplyObjectsSystem.HandleTempEntitiesJob</c> 的 m_TempQuery（Temp+Object，:920）
+        /// **不看 Deleted**，无主 Temp 一律走 <c>Create()</c>（:432 → :669-685，去掉 Temp/Animation/
+        /// BackSide、加 Applied/Created/Updated，且**不经校验**）；<c>ToolApplySystem.ApplyEntitiesJob</c>
+        /// （:59-66）也照样把它的 m_Cost 算进本帧开销。只有 Cancel 位能让两边同时跳过
+        /// （:337-341 走 <c>Cancel()</c>，:62 不计费），而 <c>Cancel()</c> 本身也只补一个 Deleted
+        /// （:474-482），收尸仍旧是原版 Cleanup 的活 —— 我们既不 Destroy、也不碰原版的 Temp。
+        ///
+        /// 只碰"我们自己喂出来的"（<c>Temp.m_Original == Entity.Null</c>），与原版线路工具那枚
+        /// 同资产同位置的复制 Temp 划清界限（见 IsTempAlive / RetireTemp 的同一条红线）。
+        /// </summary>
+        private void CancelTempsOnApplyFrame()
+        {
+            CancelTempFlag(m_previewTemp);
+            for (int i = 0; i < m_pending.Count; i++) CancelTempFlag(m_pending[i].Temp);
+        }
+
+        private void CancelTempFlag(Entity e)
+        {
+            if (e == Entity.Null) return;
+            try
+            {
+                Temp t;
+                if (!EntityManager.Exists(e)) return;
+                if (!EntityManager.TryGetComponent(e, out t)) return;
+                if (t.m_Original != Entity.Null) return;
+                if ((t.m_Flags & TempFlags.Cancel) != 0) return;
+                t.m_Flags |= TempFlags.Cancel;
+                EntityManager.SetComponentData(e, t);
+            }
+            catch (Exception) { }
         }
 
         /// <summary>当前这一档沿路让位量（米）。</summary>
@@ -1450,9 +2322,18 @@ namespace BusLineAutoStops.Systems
             float nearDist;
             try
             {
-                // 悬停点就地查重只用小半径（3m）：真正的"这里已经有站了"判据放到
+                // 需求 3（v0.13.0）：光标已经落进既有同类站台的依附范围 —— 原版 `FindWaypointLocation`
+                // 的 ConnectedRoute 分支（RouteToolSystem.cs:277-280）会把这一笔路径点**直接依附**上去，
+                // 这里再放第二枚站台既没有意义，还会让幽灵跟站台/物件碰撞出 Error、把玩家那一笔顶掉。
+                if (IsSameKindStop(toolParent))
+                {
+                    why = "光标已在既有站台的依附范围内（" + Describe(toolParent)
+                        + "）→ 原版会直接把路径点依附上去，不新建";
+                    return false;
+                }
+                // 悬停点就地查重只用小半径（3m→4m，见 kStopAttachRadius）：真正的"这里已经有站了"判据放到
                 // 预览幽灵的**实际落位**上量（ClaimPendingPreview），隔着半条路不算重复。
-                Entity near = m_stops.Nearest(EntityManager, pos, kHoverSkipDistance, out nearDist);
+                Entity near = m_stops.Nearest(EntityManager, pos, kStopAttachRadius, out nearDist);
                 if (near != Entity.Null)
                 {
                     why = "光标就压在已有同类站台上（" + Describe(near) + " 距 "
@@ -1462,7 +2343,7 @@ namespace BusLineAutoStops.Systems
                 }
 
                 string via;
-                attach = ResolveAttachParent(toolParent, out via);
+                attach = ResolveAttachParent(pos, toolParent, out via);
                 if (attach == Entity.Null)
                 {
                     why = "解析不到合法父级：工具父级=" + Describe(toolParent)
@@ -1564,10 +2445,14 @@ namespace BusLineAutoStops.Systems
         }
 
         /// <summary>
-        /// 父级解析顺序：工具给的 → 射线给的（父级/命中物）→ 命中物的 Owner 链（Lane→Edge 那类）。
+        /// 父级解析顺序：工具给的 → 射线给的（父级/命中物）→ 命中物的 Owner 链（Lane→Edge 那类）
+        /// → **依附兜底**（v0.12.0，需求 2 实机取证）：
+        /// ① 候选物自己不是路、但它**依附在**某条路上 —— 玩家拖拽松手时常正指着另一枚站台
+        ///   （站台永远钉在路边，它的 <c>Attached.m_Parent</c> 就是脚下那条路）；
+        /// ② 落点近旁（<see cref="kNearestStopParentRadius"/> 米）若有一枚同类站台，沿用它的依附父级。
         /// via 带进日志，方便下次一眼看出是哪条路数通的。
         /// </summary>
-        private Entity ResolveAttachParent(Entity toolParent, out string via)
+        private Entity ResolveAttachParent(float3 pos, Entity toolParent, out string via)
         {
             via = "";
             if (IsAttachableParent(toolParent))
@@ -1605,6 +2490,43 @@ namespace BusLineAutoStops.Systems
                 {
                     via = "命中物第 " + i + " 级父 " + Describe(e);
                     return e;
+                }
+            }
+
+            // —— 依附兜底①：候选物是"依附体"（站台/依附建筑），沿 Attached.m_Parent 摸回它脚下的路。
+            //    只做 TryGetComponent 读，不扫世界、不新增射线读取（需求 5 红线）。
+            //    实机 2026-10-19 23:25:30 松手帧：工具父级=射线父级=408903{PrefabRef|ConnRoute[]|}
+            //    预制体=Pack7-BusStop01，全链无路 —— 408903 是站台，它的依附父级就是答案。
+            Entity probe = GetAttachedParent(toolParent);
+            if (IsAttachableParent(probe))
+            {
+                via = "工具父级依附 " + Describe(probe);
+                return probe;
+            }
+            probe = GetAttachedParent(owner);
+            if (IsAttachableParent(probe))
+            {
+                via = "射线父级依附 " + Describe(probe);
+                return probe;
+            }
+            probe = GetAttachedParent(hit);
+            if (IsAttachableParent(probe))
+            {
+                via = "射线命中依附 " + Describe(probe);
+                return probe;
+            }
+
+            // —— 依附兜底②：近旁有同类站台就借用它的路（光标还在站旁，路就是那一条）。
+            //    只在前面全失败时才走到这里（正常路径零额外查询），Nearest 是索引查询、无分配。
+            float nearStopDist;
+            Entity nearStop = m_stops.Nearest(EntityManager, pos, kNearestStopParentRadius, out nearStopDist);
+            if (nearStop != Entity.Null)
+            {
+                Entity nearParent = GetAttachedParent(nearStop);
+                if (IsAttachableParent(nearParent))
+                {
+                    via = "近旁站台(" + nearStopDist.ToString("0.0") + "m)依附 " + Describe(nearParent);
+                    return nearParent;
                 }
             }
             return Entity.Null;
@@ -1758,6 +2680,34 @@ namespace BusLineAutoStops.Systems
         }
 
         /// <summary>
+        /// 原版这一帧打算走哪条输出管线（kPhase* 三个整数，语义见常量注释）。
+        ///
+        /// 读的是 <c>ToolBaseSystem.applyMode</c> 这个公开只读属性 —— 本模组**只读不写**，
+        /// 反射代按（ToolApplyProxy / GetSetMethod）依旧退役；拿不到就当 None（最保守：
+        /// 既不会去补喂，也不会误判成拖拽提交）。
+        /// </summary>
+        private static int ToolPhase(ToolBaseSystem tool)
+        {
+            try
+            {
+                if (tool == null) return kPhaseNone;
+                return (int)tool.applyMode;
+            }
+            catch (Exception) { return kPhaseNone; }
+        }
+
+        /// <summary>线路工具当前状态（与 <c>RouteToolSystem.state</c> 同值；拿不到当 Default）。</summary>
+        private static ToolLineState SafeLineState(RouteToolSystem route)
+        {
+            try
+            {
+                if (route == null) return ToolLineState.Default;
+                return (ToolLineState)(int)route.state;
+            }
+            catch (Exception) { return ToolLineState.Default; }
+        }
+
+        /// <summary>
         /// 当前那个悬着的路径点。控制点依赖已在 OnUpdate 里 Complete；
         /// 这里做"还没打到东西"防御（校正 #22：工具刚激活时控制点是 default，位置 (0,0,0)）。
         /// </summary>
@@ -1795,6 +2745,7 @@ namespace BusLineAutoStops.Systems
             m_settled = false;
             m_settledSince = now;
             m_lastPos = new float3(float.MaxValue, float.MaxValue, float.MaxValue);
+            m_lastCursor = float3.zero;
             m_previewFailLogged = false;
             m_previewAnnounced = false;
             m_previewResultLogged = false;
@@ -1802,6 +2753,13 @@ namespace BusLineAutoStops.Systems
             m_previewEmptyLogged = false;
             m_attachFailLogged = false;
             m_nudgeIndex = 0;
+            m_rescueLogged = false;      // 需求 1（v0.12.0）：新的静止事件，续命日志可以再打一条
+            // 注意：这里**不能**再归零 m_prevLineState（0.11.x 的隐藏坑）。ResetSettle 走的是
+            // "本帧没有悬停点"那条早退路径（OnUpdate 里采样**之后**才可能进来），拖拽进行中
+            // 若有一帧没采到悬停点，闩锁就被洗成 Default，下一帧真正松手时判据永远差一拍
+            // （实机 2026-10-19 会话全场只有一条 [拖拽落站] 就是这个原因）。
+            // 闩锁本来就每帧重采样（OnUpdate :581），换工具/开新会话的归零点在
+            // OnUpdate 的 route==null 分支与 BeginSession —— 那两处才是语义正确的时机。
         }
 
         // ── 站台索引（需求 6：节流 + 增量） ──────────────────────────────────────
@@ -1967,6 +2925,7 @@ namespace BusLineAutoStops.Systems
             m_placed.Clear();
             RetirePendingTemps();
             m_pending.Clear();
+            m_dragLandingArmed = false; // 需求 2（v0.12.0）：会话结束，补提交作废（落点也随清理一起消失）
             m_haveCpCount = false;
             InvalidateStops();
             LazyModeState.ResetSessionCounters();
@@ -2069,6 +3028,8 @@ namespace BusLineAutoStops.Systems
             if (s == null || s.m_destroyed) return;
             s.m_placed.Clear();
             s.m_pending.Clear();
+            s.m_dragLandingArmed = false;      // 新会话不继承上一场的补提交
+            s.m_prevLineState = ToolLineState.Default;
             s.m_haveCpCount = false;
             s.m_fallbackStop = null;
             s.m_fallbackKind = TransportKind.None;

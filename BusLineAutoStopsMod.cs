@@ -27,7 +27,7 @@ namespace BusLineAutoStops
     /// </summary>
     public class BusLineAutoStopsMod : IMod
     {
-        public const string kVersion = "0.11.2";
+        public const string kVersion = "0.13.0";
 
         public static ILog log = LogManager.GetLogger("BusLineAutoStops").SetShowsErrorsInUI(false);
 
@@ -184,6 +184,35 @@ namespace BusLineAutoStops
             {
                 log.Warn("注册快捷键失败：" + e.GetType().Name);
             }
+        }
+
+        /// <summary>
+        /// 需求 1（v0.12.0）的自愈闸门：每帧（<see cref="UiCommandSystem"/> 调）比对一次
+        /// "action 现在是否启用"与"它应该是否启用"，不一致就立刻纠正。
+        ///
+        /// 为什么除了修 setter 还要有这么一条：`ProxyAction.shouldBeEnabled` 的 **getter 读的是
+        /// `m_DefaultActivator.enabled`**，而这个 activator 是**别的系统**（InputManager 的
+        /// 设备/场景解析、原版工具切换时的 SetAction）也会改写的共享状态，我们写进去的值
+        /// 并不独占。玩家报的"开一下关一下快捷键就废了"如果只是某条我们没覆盖到的路径
+        /// （例如设置页重建、重绑键、切场景）把 activator 停掉，光修 setter 是不够的。
+        ///
+        /// 代价：每帧一次 `bool` 读 + 一次字符串判空，且**只在真的不一致时**才写（热路径无写）。
+        /// 只做"应该开却没开 / 应该关却没关"两个方向的纠正，绝不在这里改动别的状态。
+        /// </summary>
+        internal void KeepHotkeyInSync()
+        {
+            try
+            {
+                if (m_Setting == null) return;
+                ProxyAction a = m_Setting.GetAction(Setting.kActionToggleLazy);
+                if (a == null) return;
+                ProxyBinding b = m_Setting.ToggleLazyBinding;
+                bool want = LazyModeState.Enabled && IsBindablePath(b != null ? b.path : null);
+                if (a.shouldBeEnabled == want) return;
+                a.shouldBeEnabled = want;
+                log.Info("[快捷键] 自愈：shouldBeEnabled 被外部改成了 " + (!want) + " → 纠正为 " + want);
+            }
+            catch (Exception) { }
         }
 
         /// <summary>
@@ -395,6 +424,23 @@ namespace BusLineAutoStops
             {
                 ExitLazyMode();
             }
+        }
+
+        /// <summary>
+        /// 需求 1（v0.12.0）：总开关**打开**时也要把快捷键接回来。
+        ///
+        /// 0.11.x 的真 bug（玩家报"每次开启或关闭总开关后快捷键就没用了"）：只有关的那条路径
+        /// 调了 <see cref="ApplyMasterToHotkey"/>（`shouldBeEnabled=false`），打开时**没有任何一处**
+        /// 把它设回 true。于是：
+        ///   · 关一次 → action 停用；
+        ///   · 再开 → 图标回来了、按钮能点了，但 action 一直停着，按 G 毫无反应；
+        ///   · 每次关/开都把这条路再确认一遍，看起来就像"用一次就坏"。
+        /// 实机日志 2026-10-20 05:53:00/05:53:08/05:53:17/05:53:26 四行 `[总开关]` 只在关的那两次
+        /// 后面跟了 `[快捷键] 跟随总开关 shouldBeEnabled=False`，开的那两次一条都没有 —— 取证一致。
+        /// </summary>
+        public void TurnOnHotkey()
+        {
+            ApplyMasterToHotkey();
         }
 
         /// <summary>总开关关掉时禁用快捷键；打开时按"有没有绑了可用的键"决定。</summary>

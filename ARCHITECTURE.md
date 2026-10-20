@@ -1,8 +1,10 @@
-# BusLine AutoStops 架构速览（v0.11.2）
+# BusLine AutoStops 架构速览（v0.13.0）
 
 给下一个接手者的最小集：现行机制、硬不变量、构建命令、待办。
 逐版迭代史与机制取证（96 条校正、每版实机日志）在 `docs/history/开发笔记-v0.1.1~v0.11.1.md`（已冻结，只查不改）。
-当前版本状态：**v0.11.2 已上传线上**：ModId 160528 / versionId=**13** / userVersion=0.11.2 / size=54185B / **仍 Private**（2026-10-13 发布；发前用 `pull-live.js` 核对线上停在 versionId=12，发后回读 versions 表 + 网页可访问性树确认 MOD VER.、描述、四个外链、Code Mod、1.6.* 全部仍在）。玩家本地实机验收，重点看日志里 `[预览结果]` 是否恢复输出。
+当前版本状态：**v0.13.0 已本地部署、离线门禁全绿、已上传线上（Private）**：ModId 160528 / 线上从 0.11.2 直接到 0.13.0 / dll 102400B / **仍 Private**。
+0.13.0 修玩家三条反馈：拖拽前不再模拟出公交站、拖拽落地的路径点依附到新站台、光标进入既有站台依附范围时不模拟（交原版直接依附）。
+**0.12.0 / 0.12.1 只在本机验证过、从未上传**（线上一直停在 0.11.2），它们的内容（拖拽放站、松手帧闪退修复、总开关与快捷键联动、退出策略默认不保留）合并进 0.13.0 一起上线。
 
 ## 机制一页纸：懒人模式状态机
 
@@ -22,6 +24,110 @@
 | 88 | `RouteToolSystem.GetControlPoints` 返回的是**工具自己的持久缓冲**（NativeList 视图）→ **共用缓冲绝不 Dispose**；撤点只能 `state==Create` 时从 `Length-2` 往前 `RemoveAt`，且守住四条防御（不动悬停位 / 遇非本会话依附就停 / 剩 3 点收手） | `Cancel()` 是私有的，别的系统（GuideLinesSystem）也是直接拿这份缓冲进 job |
 | 89 | **`Temp.m_Original == Entity.Null` 才是本模组造的幽灵**，`!= Null` 是原版的复制/选中副本（原件正被 `Hidden` 藏着）→ 判己防误删，删副本 = 玩家看到"站台消失" | 副本要等 `SubObjectHiddenSystem` 确认没有活 Temp 指回原件才解除隐藏 |
 | 90 | **落点定侧只由喂点的有符号横向偏移决定**（喂点用射线真实命中点，不用控制点位置） | `SnapRouteLane` 用 `dot(MathUtils.Right(切向), 喂点-曲线点)` 选车道，`SnapSegmentAreas` 再用它选可建造区；喂错点 = 落到对面人行道 |
+
+## v0.13.0 本轮修订（2026-10-21，玩家三条反馈）
+
+玩家原话：①"拖拽线路，拖拽前不需要预览显示公交站啊，我看你每次都是鼠标移到路径点上还没左键按下去拖拽就已经开始模拟生成一个公交站了"；②"拖拽结束后这次倒是生成公交站了，但是这个拖拽的路径点没有依附到这个公交站"；③"如果鼠标位置已经进入公交站依附点范围的话，就不要预览模拟放置了，按游戏原版行为就会被直接依附到公交站上去"。
+
+三条都落在**预览闸门**与**拖拽落地后的收尾**上。判据全部照抄原版自己的决定，不新发明：
+
+1. **需求 1：拖拽前/拖拽中不预览**。判据收敛在 `PlacementDecisions.SuppressPreview(state, hoverOnRouteElement, hoverOnExistingStop)`：
+   - `state == Modify / Remove`：工具已经在拖拽 / 删点，左键的含义是"改线路"（`RouteToolSystem.cs:1908-1920` 进 Modify、`:2025-2052` 松手提交）；
+   - `state == Default` 且光标压在既有线路的路径点/路段上 —— 就是原版 `Apply()` 的 Default 分支进 Modify 的那条判据
+     `HasComponent<Route>(cp.m_OriginalEntity) && math.any(cp.m_ElementIndex >= 0)`（`research/RouteToolSystem.cs:1908-1912`）。
+     `HoverOnRouteElement` 逐字对齐它，另外把带 `Temp` 的"正在画的那条线"排除（那是在加路径点，不是拖拽）；
+   - `Create` 态不抑制：画线途中吸到线路上很常见，那时左键是加路径点。
+   抑制期间幽灵要**当场收干净**（Apply 帧除外，理由见 v0.12.1 的崩溃取证）：一枚还带着 `Game.Tools.Error` 的幽灵会让
+   `ToolBaseSystem.GetAllowApply()`（`research/ToolBaseSystem.cs:541-543`，查的是**全世界**的 Error）整帧为假 ——
+   玩家那一笔会被原版悄悄吞掉。抑制期间另做一次**只解析、不显示**的记录（`NoteLandingHint` → `m_previewParent/m_previewSpot`），
+   所以拖拽落站的首选线索（"沿用玩家眼前那枚预览的父级"）不会因为"不显示预览"而断掉。
+
+2. **需求 2：拖拽落地的路径点接上新站台**。拖拽走 Modify 态，松手那一帧原版就把线路提交完了
+   （`ApplyRoutesSystem` 把 `WaypointDefinition` 写回真实路径点），路径点是在**站台出现之前**造出来的，
+   它的 `Connected` 只能是空 —— 于是"站台有了、公交不靠站"。左键画线那条路能靠改写控制点让定义带连接（笔记 #71），
+   拖拽**没有控制点可改**，只能按原版自己的数据形状事后补（`AttachDraggedWaypoint`）：
+   - 拖拽期间记下"哪条线、哪一枚路径点"：`TryCaptureDragRoute` 从 Modify 态的悬停点取 `m_OriginalEntity`（Route 实体）
+     + `m_ElementIndex.x`（路径点下标，`RaycastJobs` 的 `m_CellIndex`）；悬停点被 `SnapJob` 改写时用 `RaycastOwner()` 兜底。
+     下标只是首选，落点 `kDragAttachRadius`（12m）内最近的一枚路径点兜底（拖路段会插新点）；
+   - 写三处、都是原版自己会写的那种：路径点 `Connected`（+ `VehicleTiming`，一次 `ComponentTypeSet` 补齐，对应
+     `RoutePrefab.LateInitialize` 的 hashSet3 与 `TransportLinePrefab.GetArchetypeComponents`）并补 `Updated`；
+     站台 `ConnectedRoute` 缓冲去重追加（`WaypointConnectionSystem` 只在 Created 那一帧 Add，事后再加它不管）。
+     之后 `WaypointConnectionSystem.FindWaypointConnectionsJob` 照 `Connected` 重算 AccessLane/RouteLane、
+     把路径点搬到站台位置、发 `PathTargetMoved` 并重算路段路径（`WaypointConnectionSystem.cs:1170-1410`）——
+     车道与寻路全是原版自己做的，我们不接管；
+   - 闸门在 `PlacementDecisions.ShouldAttachDraggedWaypoint`：找不到 / 已经连着这枚站台（幂等）/ 已连着别的活实体（不抢）都不写；
+   - **这是本模组唯一一处写"别人的实体"**（线路的路径点）。约束写进代码注释：只碰本笔拖拽那条线上、落点 12m 内的**一枚**
+     路径点，只加原版 archetype 里本来就有的组件，`FlushPendingJobs()` 之后才动结构，全程 try/catch + 一行 `[拖拽依附]` 日志。
+
+3. **需求 3：站台依附范围内不模拟**。判据 `IsAttachStopHover`：① 权威 —— 工具解析出来的实体本身是同类站台
+   （`FindWaypointLocation` 的 ConnectedRoute 分支，`RouteToolSystem.cs:277-280`，命中即"这一笔路径点会直接依附它"）；
+   ② 兜底 —— 光标 `kStopAttachRadius`（4m）内有同类站台。三处共用：预览闸门、`TryResolveLanding`（预览/左键/拖拽补提交共用）、
+   `TryLandDragStop`（松手处就在站台旁边 → 交原版依附，不新建）。
+   实机 2026-10-21 01:08:18 的失败正是 **3.07m**：旧的 3m 判据差一点点没拦住，喂出去的模拟站台在偏移位置跟物件碰撞被挂
+   `Game.Tools.Error`，玩家的那一笔就被 `GetAllowApply()` 顶掉（"在这个站台放路径点会失败"）。
+   另外 `RetireTemp` 现在**先摘 Error 再加 Deleted**（`ClearGhostError`）：带 Deleted 的实体要到帧末 Cleanup 才销毁，
+   中间那几帧的 Error 照样挡玩家。
+
+4. **附带（需求 2 的稳定性）**：松手后"光标跑开"改成**连续 3 帧**才算数（`kDragAwayGraceFrames` + `PlacementDecisions.DragCursorLeft`）。
+   松手帧原版先 Clear 控制点、再重新射线补一个（`RouteToolSystem.cs:2039-2048`），采样点会跳 1~2 帧；实机 2026-10-21 01:08:28
+   就是被这一跳骗掉一整笔已经解析成功的拖拽（松手后 28ms 报"光标已离开落点"）。
+
+5. **版本口径**：0.12.0 / 0.12.1 从未上传，线上一直是 0.11.2；所以商店 ChangeLog 从 0.11.2 直接接到 0.13.0，
+   `scripts/set-store-copy.js` 里补的是 0.13.0 一段（把 0.12.x 的内容一并写进去），旧的 0.11.2 及更早段落原样保留。
+
+## v0.12.1 本轮修订（2026-10-20 夜，修 0.12.0 的拖拽闪退）
+
+玩家报："拖拽放站这个发生闪退了，拖拽结束的一瞬间就闪退了"。实机日志把病灶钉死了：
+
+```
+22:07:33,994 [线路工具] 态 Modify → Default 相位=1 本帧判为拖拽提交=True
+22:07:33,997 [拖拽落站] @(-560.1,70.5,1008.9) 资产=Pack7-BusStop01 ← 沿用玩家眼前那枚预览的父级 425913 … QuayLarge01
+（日志到此为止）
+```
+Player.log 收尾是 `Native Crash Reporting / Got a UNKNOWN while executing native code` + **空托管栈** ——
+本项目里"空托管栈原生崩溃"的同义词就是"持有句柄期间改结构 / 同帧互斥结构改动"（笔记 #63/#89）。
+落站逻辑本身已经走通（站台、父级都解析出来了），崩在**喂定义那一帧**：
+
+1. 松手帧 `applyMode == Apply`。我们在这一帧 `RetirePreview()`（对我们的预览幽灵 `AddComponent<Deleted>`），
+   紧接着 `FeedStopDefinition`（同 prefab、同位置 —— 因为沿用的就是预览的父级与落点）。
+2. 同一帧 `GenerateObjectsSystem.CollectCreationDataJob` 的 `m_DeletedQuery`
+   （`Object + Deleted + Temp + PrefabRef`，:1734）**正是拿"带 Deleted 的幽灵"当可复用的旧物件**，
+   按 `{Prefab, SubPrefab, Original, Owner}` + 最近位置配对（:745-783），对我们的新定义走
+   `CreateObject(..., oldEntity)` → 对**同一个实体** `RemoveComponent<Deleted>`（:1103-1130）。
+3. 于是同一帧里两条路径对同一实体做**互斥的组件增删**（我们删、它复活）→ 原生崩溃。
+
+修法（两拍，见 `ArmDragLanding` / `TryLandDragStop`）：
+
+- **松手帧只记账**：`ArmDragLanding` 把落点、预览父级、站台资产存进托管字段，**只补 `TempFlags.Cancel`**
+  （`SetComponentData`，非结构改动，挡住 Apply 帧的免费转正），然后 return ——
+  不建实体、不改结构、不 `Complete` 依赖。
+- **第一个非 Apply 帧才落地**：`TryLandDragStop` 走 `FlushPendingJobs() → RetirePreview() → FeedDragCommit()`，
+  与"预览喂定义"完全同构（预览从来没崩过）；代价只有一帧（约 16ms）。
+  判据收敛在 `PlacementDecisions.DecideDragRetry(..., toolApplies, ...)`：**Apply 帧一律 Wait**，
+  且这条 Wait 排在 `landingResolved → Commit` **之前**（顺序不能换）。
+
+顺带按玩家意见收敛默认值：`ExitPolicy` 的**唯一决策点只有 `Setting.SetDefaults`**；
+`LazyModeState.ExitPolicy` / `PendingExitPolicy` 是热路径镜像与排队中间量（正常流程一定被覆盖），
+`ResetForNewWorld` 里那行 `PendingExitPolicy = …` 是死赋值（上一行已把 `PendingExitCleanup` 清掉），已删除。
+
+## v0.12.0 本轮修订（2026-10-20，玩家三条需求）
+
+玩家原话三件事：①"快捷键失效了，每次开启或关闭总开关后就没用了"；②"默认改成不保留公交站"；③"拖拽路线不能自动放置公交站的问题还是没解决"。
+
+1. **需求 1：总开关与快捷键的双向联动**。根因（实机日志 2026-10-20 05:53 四行 `[总开关]` 只有关的两次后面跟着 `[快捷键] 跟随总开关 shouldBeEnabled=False`，开的两次一条都没有）：`ApplyMasterToHotkey()` 只在**关**那条路径上调过，打开时没有任何一处把 `shouldBeEnabled` 设回 true —— action 一旦停用就再没接上，玩家看到"用一次就坏"。实现：setter 里 `if (v) TurnOnHotkey(); else TurnOffIfLazy();` 两个方向都走，外加每帧自愈闸门 `KeepHotkeyInSync()`（在 `UiCommandSystem.OnUpdate` 调）。自愈的理由：`ProxyAction.shouldBeEnabled` 的 getter 读的是 `m_DefaultActivator.enabled`（`research/ProxyAction.cs:322-347`），那是 InputManager 与原版工具 `SetAction` 也会改写的共享状态，setter 只管得到我们自己这一侧。
+2. **需求 1：总开关改叫「启用模组」且快捷键开不了它**。总开关管的是模组本身：关掉时左上角图标不出现（前端 `master !== false` 才渲染）、世界侧系统一行不写（`LazyModeState.Enabled` 早退）；开启后懒人模式才能用图标或快捷键进出。快捷键回调第一件事就是 `if (!LazyModeState.Enabled) return;` —— 永远不给"快捷键把模组打开"留缝。12 语种 `master.label`/`master.desc` 全改。
+3. **需求 2：退出策略默认改成不保留**。**决策点只有 `Setting.SetDefaults` 一处**（玩家指出的：改那一个值就够）。
+   其余引用是镜像与兜底，全部指向同一个常量 `TransportKindRules.DefaultExitPolicy()`：`Setting.m_ExitPolicy`
+   字段初值（设置文件缺失/读取失败时兜底）、`LazyModeState.ExitPolicy`（热路径镜像，正常由 `SyncToState` 覆盖）、
+   `PendingExitPolicy`（排队中间量，`ExitLazyMode` 一定先写它再置 `PendingExitCleanup`）。
+   老存档里明确选过保留的仍是保留（值读回来就是 0）。
+4. **需求 3：拖拽落站（真 bug，三轮没修好的那个）**。实机日志 2026-10-20 05:48-05:53 全场 **0 条 `[拖拽落站]`**，而那场会话里懒人模式 05:52:57 就因为"离开线路工具"自动退出了 —— 拖拽根本不是模组在处理，这是第一层。真正写进代码的病因有三条：
+   - **自己删掉了唯一的线索**：`CommitDraggedStop` 开头就 `RetirePreview()`，而它会把 `m_previewParent`/`m_previewSpot`/`m_hasPreviewSpot` 一起清空。预览能显示，就说明上一帧我们在同一处**已经成功解析出过一个合法父级**（`FeedPreview` 里解析失败是不会喂的）—— 那个父级就是玩家脚下这条路的权威答案。松手帧的射线却常常正压在另一枚站台或线路飘带上（2026-10-19 23:25:30 取证：工具父级=射线父级=`预制体=Pack7-BusStop01`，全链一个可依附的都没有），怎么解析都是 Null。修法：**先存后清**，`seenParent`/`seenSpot`/`seenUsable` 取出来再收幽灵，并**优先沿用**（松手帧 ①、补提交帧都先认它）。
+   - **松手帧没有悬停点就整笔丢弃**：原版 `Apply()` 的 State.Modify 分支（`research/RouteToolSystem.cs:2039-2047`）是"先 Clear 控制点、再重新射线补一个"，射线没打中时控制点是空的。0.11.2 的顺序让 `if (!TryCurrentPoint)` 在拖拽提交之前 return，这一笔连日志都不会留。修法：提交块整体上移到 `TryCurrentPoint` 早退**之前**，没有悬停点就用**上一帧记下的光标**（新增 `m_lastCursor`，每帧赋值；不能复用 `m_lastPos` —— 那个是静止判定的锚点，只在光标**动了**时才更新）。
+   - **诊断缺位，分不清"没触发"与"没开"**：新增进出 Modify 态各一行日志（每笔拖拽正好两条），下一轮实机只要看到 Modify 行而没有 `[拖拽落站]`，就说明检测没触发；两条都没有而玩家确实拖了，说明懒人模式当时没开。
+5. 拖拽落地的站台**不进 `m_placed`**（不可右键回退，与原版一致）—— 这条 0.11.2 定案、本版保留。
+   "不做依附改写"这一半在 **v0.13.0 已改**：改写控制点（左键那条路）确实不能做，但落地后必须把那一枚已经造出来的
+   路径点接到新站台上，否则公交不靠站；见上面 v0.13.0 的第 2 条。
 
 ## v0.11.2 本轮修订（2026-10-12 第三轮审查 → 2026-10-13 实施）
 
@@ -74,9 +180,9 @@ node scripts/set-store-copy.js          # 写面向玩家的 4 个字段 + mod.j
 
 ```powershell
 node scripts/pull-live.js            # 只读：线上版本表停在哪一版
-node scripts/pack-release.js 0.11.2  # 全量自检，红一条就别发
+node scripts/pack-release.js 0.13.0  # 全量自检，红一条就别发
 node scripts/verify.cjs --deployed   # 部署完整性
-MSYS_NO_PATHCONV=1 DOTNET_ROLL_FORWARD=Major dotnet "<游戏>\Cities2_Data\Content/Game/.ModdingToolchain/ModPublisher/ModPublisher.dll" NewVersion Properties/PublishConfiguration.xml --contentFolder releases/0.11.2 --verbose
+MSYS_NO_PATHCONV=1 DOTNET_ROLL_FORWARD=Major dotnet "<游戏>\Cities2_Data\Content/Game/.ModdingToolchain/ModPublisher/ModPublisher.dll" NewVersion Properties/PublishConfiguration.xml --contentFolder releases/0.13.0 --verbose
 ```
 
 `PublishConfiguration.xml` 是**线上商店页的镜像**，NewVersion 会无条件重推全部元数据：`ModId 160528`、`DisplayName`、`AccessLevel=Private`、`Tag`、`GameVersion`、`Thumbnail`、论坛 + github + x + kofi 四条链接都不许被本地手改带歪（`set-store-copy.js` 里有 `KEEP` 断言）。
@@ -90,35 +196,40 @@ MSYS_NO_PATHCONV=1 DOTNET_ROLL_FORWARD=Major dotnet "<游戏>\Cities2_Data\Conte
 | `deploy-local.js` | Roslyn 直编 + 部署到本机 `Mods\BusLineAutoStops\`（默认强制重跑 webpack） |
 | `dotnet-sdk.js` | **v0.11.2 新增**：解析本机最新 8.x SDK 的 `csc.dll` 与 `NETCore.App.Ref` 引用目录（三条构建链共用，别再写死版本号） |
 | `paths.js` | **v0.11.2 新增**：游戏目录 / 部署目录 / 部署白名单四项的唯一真值（deploy-local 与 verify --deployed 读同一处） |
-| `pack-release.js` | 打包 `releases/<版本>/` 并做版本/需求/安全自检（144 枚钉子，防发旧产物与死分支） |
+| `pack-release.js` | 打包 `releases/<版本>/` 并做版本/需求/安全自检（175 枚钉子，防发旧产物与死分支） |
 | `pull-live.js` | 只读核对 Paradox 线上版本表（写 `research/live-versions.json`） |
 | `set-store-copy.js` | 写 `PublishConfiguration.xml` 面向玩家的 4 个字段 + `Frontend/mod.json` |
 | `verify.cjs` | 离线门禁：版本四处一致 + T3 +（`--deployed`）部署完整性 |
 
 ## 验证台账
 
-**已验证（离线，2026-10-13）**
+**已验证（离线，2026-10-21 v0.13.0）**
 
-- `node scripts/compile-check.js` 0 错误；`dotnet build` 不在本版跑（跑完必须 deploy-local 重铺）。
-- `node scripts/pack-release.js 0.11.2` → 144 枚钉子全绿（含本版新增 12 枚：P1-1 四枚 / P1-2 两枚 / P2-4 三枚 / P2-5 三枚）。
-- `node scripts/verify.cjs` → 版本四处一致 + T3 `pass=42 fail=0`。
-- `node scripts/verify.cjs --deployed` → 15 项全绿；守卫有效性做过一次真实反证：源码改动后、重编之前跑，它准确报出"最新的 AssetFilterService.cs 比部署 DLL 新"。
-- P2-5 的原型结论有 `file:line` 反编译证据（上面第 5 条，dump 存在 `research/`，不入库）。
-- 发布回读（2026-10-13）：`/mods/versions` 登记 versionId=13 / 0.11.2；模组页 `MOD VER.=0.11.2`、`Private mod`、`Code Mod`、`SUGGESTED GAME VER. 1.6.*`、GitHub/X/Ko-fi/论坛四条链接与中英描述逐段仍在 —— NewVersion 重推元数据没有把玩家线上手调过的东西盖掉。
+- `node scripts/compile-check.js` 0 错误（13 源文件 → 102400B）。
+- `node scripts/pack-release.js 0.13.0` 全绿：175 枚钉子（含 v0.13.0 新增九枚：预览闸门三条 / 依附范围两条 / 拖拽依附三条 / 松手宽限一条）。
+- `node scripts/verify.cjs` → 版本四处一致 + T3 `pass=90 fail=0`（新增 17 条：`SuppressPreview` 8 / `ShouldAttachDraggedWaypoint` 4 / `DragCursorLeft` 5）。
+- 版本号五处统一：`BusLineAutoStopsMod.kVersion` / `Setting.kVersion` / `Frontend/mod.json` / `PublishConfiguration.xml` 的 ModVersion + mjs 横幅（pack 钉 `mjs 横幅版本一致`）。
+- `releases/0.13.0/` 已生成本版快照（dll / mjs / mod.json / 两张图标）。
+- 部署目录四件套与版本已核对（`--deployed`）：dll 102400B / mjs / mod.json(0.13.0) / 图标齐全；日志仍走 `ModsData`。
 
 **未验证（要靠玩家本地实机）**
 
-- `[预览结果]` 是否真的开始输出，且每枚预览只一行（本版最该看的一条：日志里该出现 `幽灵已出，离喂点 X.Xm … 落点横向=… 判定=…`）。
-- 退出懒人模式（尤其选"不保留"）时不再出现"持句柄改结构"类异常；顺带看 `[退出清理] 顺带撤掉 N 个…` 依旧正常。
-- P2-5 换宽后的查重表现：在它旁边叠放应当被拒；`[索引] … 站台标签查询为空 → 改用全物体路径` 这行**不该**出现（出现了说明这台机器的站台连 BusStop 标记都没有）。
-- 资产面板过滤在换存档后的第一份名单是否正确（P2-4 的异常路径只做了静态推理）。
+- **需求 1 拖拽前不预览**（v0.13.0）：鼠标移到既有线路的路径点/路段上，应当**看不到**模拟的公交站；整个拖拽过程中也不显示。
+- **需求 2 路径点依附新站台**（v0.13.0）：拖拽落站后路径点应当接到新站台上、公交真的靠站。日志看 `[拖拽依附] 路点 … → 依附=…`；
+  `这一笔没记下线路实体` / `找不到落点 … 内的路径点` 是两条已知的降级路径（站台照旧落地，只差连接）。
+- **需求 3 站台依附范围内不模拟**（v0.13.0）：光标压进既有站台 4m 内应当**不预览**，左键直接把路径点依附到那枚站台上。日志看
+  `[预览跳过] … 光标已在既有站台的依附范围内`。
+- **需求 3 拖拽落站**：左键拖拽已画好的线路，松手是否在光标处放下公交站。日志看三条：`[线路工具] 态 Default → Modify` / `→ Default`（证明检测触发了）、`[拖拽落站] … 站台已落地（拖拽新增，不可右键回退）`（成功）、或 `本帧解析不出父级，转入补提交` / `补提交放弃`（失败与原因）。只有前两条 Modify 行而没有 `[拖拽落站]`，才说明拖拽链路真的坏了。
+- **需求 1 快捷键**：开/关总开关各几次之后按 G，看是否每次都能切换懒人模式；日志里 `[快捷键] 跟随总开关 shouldBeEnabled=…` 应在开关两条路径上都出现（0.11.2 只在关的那次出现）。
+- **需求 1 图标**：总开关关掉时左上角图标应当消失、懒人模式当场退出；打开后图标回来。
+- **需求 2 默认不保留**：退出懒人模式后本次会话自动放下的站台应当被删掉；选「保留公交站」则留下。被线路停靠点引用的永不删。
 
 **已知限制（定案，不当 bug 追）**
 
 - 禁用/卸载模组要求重启进程：同一场进程内选项页仍留着本模组那一栏（P3-2）。
 - 有轨电车置灰"暂未上线"，分类认得电车、懒人模式不启用（见待办 2）。
 - 自动站台不写 `Game.Tools.Recent` → 建不扣钱、铲不退款（净零刷不出钱），是玩家定案的设计（校正 #23）。
-- 设置页 `master.label` 与商店长描述里仍有"自动放置/Auto-place"字样（功能名与 mod 名如此），本版只按玩家决定改了 `master.desc`；长描述里 3 处"站台"未清理（同样按"商店描述不动"）。
+- 商店长描述里仍有"自动放置/Auto-place"字样（功能名与 mod 名如此），按"商店描述不动"保留。
 - 第三方资产的 `BusStop` 标记能否脱离连接缓冲单独存在：**未取证**（P2-5 只证明了原版路径）。
 
 ## 已知待办（按优先级）
@@ -126,8 +237,11 @@ MSYS_NO_PATHCONV=1 DOTNET_ROLL_FORWARD=Major dotnet "<游戏>\Cities2_Data\Conte
 1. **电车落点机制**：`Setting.TramEnabled` 恒 false 且选项置灰 + `TransportKindRules.IsLazyModeEnabled` 两层门——分类认得 Tram（资产识别/过滤/查重），但懒人模式不启用、不可选；要补的是"两站一线"的电车落点，不是把开关打开。
 2. **`[预览结果]` 实机对账**（v0.11.2 新增能力）：确认它按静止事件各打一行、`落点横向` 与 `光标横向` 同号，之后这条就可以从待办里划掉。
 3. **`m_stopQueryVerified` 的回退路径**：一旦某台机器的站台物体不带 BusStop/TramStop 标记就永久走"每 2s 全量物体扫描"，在 12.8 万 lane 的城里仍可能是周期尖峰；日志 `[站台索引]` 会明说走了哪条，实机若命中再想办法（不提前优化）。
-4. 经济侧已定案的偏差：见上面的已知限制，`CommitNow` 注明"以后别顺手补 Recent"。
-5. 火车/地铁/机场/码头是车站体系，`TransportKind` 架构预留。
+4. **拖拽附件的实机对账**（v0.13.0 新增能力）：确认 `[拖拽依附]` 每笔拖拽一行、站台 `ConnectedRoute` 缓冲 +1，
+   且路径点位置被原版搬到站台上（`WaypointConnectionSystem` 的 PathTargetMoved）。若出现"路径点连着站台但公交仍不靠站"，
+   下一步查 AccessLane/RouteLane 是否被重算。
+5. 经济侧已定案的偏差：见上面的已知限制，`CommitNow` 注明"以后别顺手补 Recent"。
+6. 火车/地铁/机场/码头是车站体系，`TransportKind` 架构预留。
 
 ## 文件夹清单（根目录应当只有这些）
 

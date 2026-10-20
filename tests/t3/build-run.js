@@ -11,6 +11,7 @@ const out = path.join(__dirname, "t3.dll");
 const src1 = path.join(__dirname, "Program.cs");
 const src2 = path.join(__dirname, "..", "..", "TransportKindRules.cs");
 const src3 = path.join(__dirname, "..", "..", "BlgKeys.cs");
+const src4 = path.join(__dirname, "..", "..", "PlacementDecisions.cs");
 
 const refs = fs.readdirSync(refDir)
   .filter((f) => f.endsWith(".dll"))
@@ -26,6 +27,7 @@ const args = [
   src1,
   src2,
   src3,
+  src4,
 ];
 
 console.log("compiling... csc=" + csc + " ref=" + refDir);

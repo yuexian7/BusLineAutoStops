@@ -222,7 +222,17 @@ const anyCode = (re) => allCs.some((c) => re.test(stripC(c.text)));
 push("LandMode / LandPolicy / ShouldAutoPlace 已从源码消失",
   !anySrc(/LandMode|LandPolicy|ShouldAutoPlace|NormalizeLandMode/), "");
 push("ToolApplyProxy 已退役（DLL 里找不到反射痕迹）",
-  !utf8Has(dll, "ToolApplyProxy") && !utf8Has(dll, "GetSetMethod") && !utf8Has(dll, "applyMode"), "");
+  !utf8Has(dll, "ToolApplyProxy") && !utf8Has(dll, "GetSetMethod"), "");
+// v0.12.0：`applyMode` 从"禁词"改成"只读可见"。需求 1 的续命与需求 2 的拖拽提交都必须先知道
+// 原版这一帧写的是 Apply 还是 Clear，读的是 ToolBaseSystem.applyMode 这个公开只读属性
+// （getter 是 public、setter 是 protected，见 LazyModeSystem.kPhase* 注释）。红线因此收窄成
+// "绝不写 applyMode、绝不用反射去够它"：set_applyMode / ToolApplyProxy / GetSetMethod / SetValue 全禁，
+// 同时要求读取只有一个入口（ToolPhase），别处不许直接摸这个属性。
+// 注意：GetProperty 不能进这份禁词表 —— StationAssets 早就在用 `typeof(PrefabSystem).GetProperty("prefabs")`
+// 读资产表（那是 0.3 以来既有的、与代按无关的反射），按 DLL 子串一刀切会把它误判成回归。
+push("applyMode 只读、零反射（set_/反射代按一律没有）",
+  !utf8Has(dll, "set_applyMode") && !utf8Has(dll, "ToolApplyProxy")
+  && !utf8Has(dll, "GetSetMethod") && !utf8Has(dll, "SetValue"), "");
 push("AutoPlaceSystem 不再参与编译",
   !srcOf("Systems/AutoPlaceSystem.cs").length && !utf8Has(dll, "AutoPlaceSystem"), "");
 push("代按日志字面量已消失", !utf16Has(dll, "[自动落地]"), "");
@@ -289,7 +299,7 @@ const modCs = fs.readFileSync(path.join(root, "BusLineAutoStopsMod.cs"), "utf8")
 
   // —— v0.8.2 根因钉子（实机 2026-10-07 23:02：130 次喂送、129 次"幽灵已出"，玩家却看不见预览）——
   push("查重重量在吸附后的实际落位，不再拿路中央的悬停点量 10m",
-    lm.includes("kHoverSkipDistance") && lm.includes("m_stops.Nearest(EntityManager, landed, kSnapDistance")
+    lm.includes("kStopAttachRadius") && lm.includes("m_stops.Nearest(EntityManager, landed, kSnapDistance")
     && lm.includes("m_stops.Nearest(EntityManager, landedAt, kSnapDistance"), "");
   push("描述实体逐组件兜异常（整段 try 被一枚 ArgumentException 一把吞掉过 343 行日志）",
     /private void Flag<T>/.test(lm) && /private void BufFlag<T>/.test(lm)
@@ -440,10 +450,13 @@ const modCs = fs.readFileSync(path.join(root, "BusLineAutoStopsMod.cs"), "utf8")
   //   :284-333 SnapSegmentAreas 用 distancesq(人行道中线点, 喂点) 选可建造区。
   // 喂路中央 = 两侧等距 = 掷硬币。
   push("预览与提交的喂点都取射线真实命中点（不再拿被吸到路中央的控制点决定左右）",
-    lm.includes("float3 cursor = CursorGroundPos(hover.m_Position);")
-    && lm.includes("float3 clickCursor = CursorGroundPos(cp.m_Position);")
+    lm.includes("float3 clickCursor = CursorGroundPos(cp.m_Position);")
     && lm.includes("float3 spot = SlidePos(cursor, parent, Nudge());")
-    && lm.includes("float3 feedPos = SlidePos(clickCursor, clickParent, Nudge());"), "");
+    && lm.includes("float3 feedPos = SlidePos(clickCursor, clickParent, Nudge());")
+    // v0.12.0：拖拽提交那一处同样按光标真实点落；松手帧原版可能没留下悬停点（先 Clear 再重新射线），
+    // 这时退回"上一帧记下的光标"，绝不退回被吸到路中央的控制点。
+    && lm.includes("float3 cursor = hoverOk ? CursorGroundPos(hover.m_Position) : m_lastCursor;")
+    && lm.includes("if (hoverOk && math.any(cursor != float3.zero)) m_lastCursor = cursor;"), "");
   push("光标真实点读 r.m_Hit.m_HitPosition，带飞点防御（离控制点 >40m 不采信、y 用悬停点的）",
     lm.includes("r.m_Hit.m_HitPosition") && /internal const float kCursorMaxDrift = 40f;/.test(lm)
     && lm.includes("if (math.distance(hit.xz, fallback.xz) > kCursorMaxDrift) return fallback;")
@@ -615,6 +628,316 @@ const modCs = fs.readFileSync(path.join(root, "BusLineAutoStopsMod.cs"), "utf8")
 }
 
 {
+  // —— v0.12.0：需求 1（停稳帧偶发闪烁）+ 需求 2（左键拖拽结束时放不了公交站）——
+  const lm12 = srcOf("Systems/LazyModeSystem.cs")
+    .replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\r\n]*/g, "");
+  /** 取某个方法签名之后的方法体（到第一个 8 空格缩进的收尾大括号）。 */
+  const bodyOf12 = (sig) => {
+    const i = lm12.indexOf(sig);
+    if (i < 0) return "";
+    const m = lm12.slice(i).match(/[\s\S]*?\n {8}\}/);
+    return m ? m[0] : "";
+  };
+
+  // applyMode 这版起"只读合法"：读取必须只有一个入口（ToolPhase），写入/反射零处
+  // （:224/:711 的 DLL 钉子管产物，这里管源码形状）；kPhase* 与 Game.Tools.ApplyMode 等值、只做等值比较。
+  push("v0.12.0：applyMode 只读入口唯一（ToolPhase），相位常量与 ApplyMode 等值",
+    /private static int ToolPhase\(ToolBaseSystem tool\)/.test(lm12)
+    && (lm12.match(/\.applyMode/g) || []).length === 1
+    && /internal const int kPhaseNone = 0;/.test(lm12)
+    && /internal const int kPhaseApply = 1;/.test(lm12)
+    && /internal const int kPhaseClear = 2;/.test(lm12), "");
+
+  // 需求 1：停稳帧原版间歇写 Clear，ToolClearSystem 把整块 Temp 标 Deleted（:101），而我们的定义
+  // 只在静止开始喂过一次 —— 原版不闪是因为它每帧重喂、Deleted 幽灵当帧被回收复用。同帧补喂同一处即续命。
+  push("v0.12.0 需求1：静止帧原版写 Clear 就同帧补喂同一处（判定收敛在 ShouldRescueFeed）",
+    /private void RescuePreviewIfCleared\(int phase, float3 cursor\)/.test(lm12)
+    && lm12.includes("PlacementDecisions.ShouldRescueFeed(phase == kPhaseClear, outstanding, sameSpot)")
+    && lm12.includes("PlacementDecisions.RescueApplied(ref m_previewFed, ref m_previewWaitFrames)")
+    && /if \(m_settled && !m_previewRefused\) RescuePreviewIfCleared\(phase, cursor\);/.test(lm12)
+    && lm12.includes("FeedStopDefinition(m_previewPrefab, m_previewSpot, m_previewParent, optional: false)"), "");
+  push("v0.12.0 需求1：续命日志进 DLL（UTF-16），且补喂不动让位档（玩家看见哪儿就还放哪儿）",
+    utf16Has(dll, "[预览续命]")
+    && !/m_nudgeIndex\+\+/.test(bodyOf12("private void RescuePreviewIfCleared(int phase, float3 cursor)")), "");
+
+  // 需求 2：松手帧原版已把 state 打回 Default（RouteToolSystem.cs:2039），判据只能用上一帧的态
+  // + 本帧原版的输出动作（Apply 或退回 Default 都算松手，Clear 一票否决）。
+  push("v0.12.0 需求2：拖拽提交判据=上一帧 Modify +（本帧 Apply 或退回 Default），Clear 一票否决",
+    /PlacementDecisions\.DecideDragCommit\(m_prevLineState, lineState,\s*phase == kPhaseApply, phase == kPhaseClear\)/.test(lm12)
+    && lm12.includes("m_prevLineState = lineState;")
+    && lm12.includes("ArmDragLanding(cursor);"), "");
+
+  // —— v0.12.1：实机 2026-10-20 22:07:33 拖拽结束瞬间原生崩溃（Player.log 空托管栈）——
+  // 病根是"松手帧（applyMode==Apply）同时收幽灵 + 喂同位置同 prefab 的新定义"：
+  // 我们 AddComponent<Deleted> 的那枚幽灵，正是同一帧 GenerateObjectsSystem.m_DeletedQuery
+  // （:1734）要拿去 RemoveComponent<Deleted> 复用的旧物件（:1103-1130）→ 同一实体互斥结构改动。
+  // 修法：松手帧只记落点（ArmDragLanding），落地推迟到第一个非 Apply 帧（TryLandDragStop）。
+  push("v0.12.1：松手帧不动世界（不建实体 / 不改结构 / 不 Complete 依赖，只补 Cancel 位）",
+    (() => {
+      const arm = bodyOf12("private void ArmDragLanding(float3 cursor)");
+      return arm.length > 0
+        && arm.includes("CancelTempsOnApplyFrame();")
+        && !arm.includes("RetirePreview();")
+        && !arm.includes("FeedStopDefinition(")
+        && !arm.includes("FlushPendingJobs();")
+        && !arm.includes("m_pending.Add(")
+        && arm.includes("ArmDragLandingFields(cursor);");
+    })(), "崩溃取证：Apply 帧上收幽灵 + 喂同位置定义 = 同一实体互斥结构改动");
+  push("v0.12.1：落点 / 预览父级 / 资产在松手帧存进托管字段，跨帧活到落地帧",
+    (() => {
+      const f = bodyOf12("private void ArmDragLandingFields(float3 cursor)");
+      return f.includes("Entity seenParent = m_previewParent;")
+        && f.includes("float3 seenSpot = m_previewSpot;")
+        && f.includes("bool seenUsable = m_hasPreviewSpot && seenParent != Entity.Null")
+        && f.includes("m_dragLandingArmed = true;")
+        && f.includes("m_dragLandingSpot = cursor;")
+        && f.includes("m_dragLandingSeenParent = seenUsable ? seenParent : Entity.Null;")
+        && f.includes("m_dragLandingSeenSpot = seenSpot;");
+    })(), "");
+  push("v0.12.1：Apply 帧绝不落地（落地判据 Wait 掉 Apply 帧）",
+    (() => {
+      // 判据住在 PlacementDecisions.cs（纯逻辑壳），不在 LazyModeSystem.cs —— 取源必须分开。
+      const pd = srcOf("PlacementDecisions.cs")
+        .replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\r\n]*/g, "");
+      const k = pd.indexOf("public static DragRetryOutcome DecideDragRetry(");
+      const d = k < 0 ? "" : (pd.slice(k).match(/[\s\S]*?\n {8}\}/) || [""])[0];
+      return d.includes("if (movedAway || toolBusy) return DragRetryOutcome.Abort;")
+        && d.includes("if (toolApplies) return DragRetryOutcome.Wait;")
+        && d.indexOf("if (toolApplies)") < d.indexOf("if (landingResolved) return DragRetryOutcome.Commit;")
+        && lm12.includes("phase == kPhaseApply, m_dragLandingFrames, kDragRetryMaxFrames);");
+    })(), "顺序不能换：Apply 帧必须先 Wait，再看 resolved");
+  push("v0.12.1：落地帧与预览喂定义同构（flush → 收幽灵 → 喂定义 → 排 DragCommit）",
+    (() => {
+      const t = bodyOf12("private void TryLandDragStop(ControlPoint hover, int phase, ToolLineState lineState)");
+      const fd = bodyOf12("private void FeedDragCommit(float3 spot, Entity prefab, PrefabBase pb,");
+      return t.includes("FlushPendingJobs();")
+        && t.indexOf("FlushPendingJobs();") < t.indexOf("RetirePreview();")
+        && t.includes("PlacementDecisions.DragSettled(ref m_previewFed, ref m_previewWaitFrames);")
+        && t.includes("FeedDragCommit(m_dragLandingSpot, prefab, pb, parent,")
+        && fd.includes("FeedStopDefinition(prefab, feedPos, parent, optional: false)")
+        && fd.includes("DragCommit = true,")
+        && fd.includes("Position = spot,");
+    })(), "");
+  push("v0.12.1：落地优先沿用玩家眼前那枚预览的父级（预览能显示 = 这处已解析成功过）",
+    (() => {
+      const t = bodyOf12("private void TryLandDragStop(ControlPoint hover, int phase, ToolLineState lineState)");
+      return t.includes("if (m_dragLandingSeenParent != Entity.Null")
+        && t.includes("math.distance(m_dragLandingSeenSpot.xz, m_dragLandingSpot.xz) <= kPreviewReuseRadius")
+        && t.includes("IsAttachableParent(m_dragLandingSeenParent)")
+        && t.includes("沿用玩家眼前那枚预览的父级 ")
+        && t.indexOf("m_dragLandingSeenParent != Entity.Null") < t.indexOf("TryResolveLanding(m_dragLandingSpot");
+    })(), "");
+  push("v0.12.1：补提交定格落点、不跟光标跑（光标跑开 / 工具开始新的一笔 / 等满预算三档作废）",
+    (() => {
+      const t = bodyOf12("private void TryLandDragStop(ControlPoint hover, int phase, ToolLineState lineState)");
+      return t.includes("m_dragLandingFrames++;")
+        && t.includes("math.distance(m_previewCursorNow.xz, m_dragLandingSpot.xz) > kDragRetryRadius")
+        && t.includes("bool toolBusy = lineState != ToolLineState.Default;")
+        && t.includes("PlacementDecisions.DecideDragRetry(")
+        && lm12.includes("else if (m_dragLandingArmed)")
+        && lm12.includes("TryLandDragStop(hoverOk ? hover : default(ControlPoint), phase, lineState);")
+        && /internal const int kDragRetryMaxFrames = 30;/.test(lm12);
+    })(), "");
+  // 松手帧原版是"先 Clear 控制点、再重新射线补一个"：射线没打中就没有悬停点。
+  // 排队必须排在 TryCurrentPoint 早退之前，否则这一笔连日志都不留（0.11.2 实机 0 条 [拖拽落站] 的成因之一）。
+  push("v0.12.1：松手帧没有悬停点也要排队（排在 TryCurrentPoint 早退之前 + 上一帧光标兜底）",
+    (() => {
+      const iArm = lm12.indexOf("if (dragCommit && math.any(cursor != float3.zero))");
+      const iBail = lm12.indexOf("if (!hoverOk)");
+      return iArm > 0 && iBail > iArm
+        && lm12.includes("if (hoverOk && math.any(cursor != float3.zero)) m_lastCursor = cursor;")
+        && lm12.includes("m_lastCursor = float3.zero;")
+        && lm12.includes("float3 cursor = hoverOk ? CursorGroundPos(hover.m_Position) : m_lastCursor;");
+    })(), "");
+  push("v0.12.0 需求2：父级兜底允许沿站台的依附（Attached.m_Parent）摸回脚下的路",
+    (() => {
+      const rp = bodyOf12("private Entity ResolveAttachParent(float3 pos, Entity toolParent, out string via)");
+      return rp.includes("GetAttachedParent(toolParent)")
+        && rp.includes("GetAttachedParent(owner)")
+        && rp.includes("GetAttachedParent(hit)")
+        && rp.includes("m_stops.Nearest(EntityManager, pos, kNearestStopParentRadius, out nearStopDist)")
+        && /internal const float kNearestStopParentRadius = 12f;/.test(lm12)
+        && lm12.includes("ResolveAttachParent(pos, toolParent, out via)");
+    })(), "");
+  // v0.13.0 起这条钉子的后半句变了：拖拽落地仍然**不进撤销栈**、仍然不改写控制点，
+  // 但必须补一次"路径点接站台"的数据写入（AttachDraggedWaypoint）—— 玩家报的
+  // "拖拽结束了、站台生成了、路径点却没依附上去"缺的就是这一步。钉子只钉真实行为。
+  push("v0.13.0：拖拽落地不进撤销栈、不改写控制点，但必须把那一枚路径点接到新站台上",
+    (() => {
+      const br = (lm12.match(/if \(p\.DragCommit && !PlacementDecisions\.DragCommitIsUndoable\(\)\)\s*\{([\s\S]*?)\n {20}\}/) || ["", ""])[1];
+      return br.length > 0 && !br.includes("m_placed.Add") && !br.includes("RewriteControlPointAttachment")
+        && br.includes("AttachDraggedWaypoint(temp, p.DragRoute, p.DragRouteIndex, p.Position, landed)")
+        && utf16Has(dll, "[拖拽落站]") && utf16Has(dll, "[拖拽依附]");
+    })(), "");
+  // 松手帧没留下悬停点也要落：提交排在 TryCurrentPoint 早退之前（0.11.2 实机 0 条 [拖拽落站] 的成因之一）。
+  push("v0.12.0 需求2：松手帧没有悬停点也照样落站（提交在 TryCurrentPoint 早退之前 + 上一帧光标兜底）",
+    (() => {
+      const iCommit = lm12.indexOf("if (dragCommit && math.any(cursor != float3.zero))");
+      const iBail = lm12.indexOf("if (!hoverOk)");
+      return iCommit > 0 && iBail > iCommit
+        && lm12.includes("if (hoverOk && math.any(cursor != float3.zero)) m_lastCursor = cursor;")
+        && lm12.includes("m_lastCursor = float3.zero;");
+    })(), "");
+  // 分诊：进出 Modify 各一行日志。没有这两行而玩家确实拖了 ⇒ 懒人模式当时没开，问题不在拖拽链路。
+  push("v0.12.0 需求2：进出 Modify 态各打一行分诊日志（区分没触发与没开懒人模式）",
+    /if \(lineState != m_prevLineState\s*&& \(lineState == ToolLineState\.Modify \|\| m_prevLineState == ToolLineState\.Modify\)\)/.test(lm12)
+    && lm12.includes("[线路工具] 态 "), "");
+}
+
+{
+  // —— v0.13.0：玩家三条反馈（拖拽前不该预览 / 拖拽落地后路径点要依附站台 / 站台依附范围内不预览）——
+  const lm13 = srcOf("Systems/LazyModeSystem.cs")
+    .replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\r\n]*/g, "");
+  const pd13 = srcOf("PlacementDecisions.cs")
+    .replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\r\n]*/g, "");
+  /** 取某个方法签名之后的方法体（到第一个 8 空格缩进的收尾大括号）。 */
+  const bodyOf13 = (sig) => {
+    const i = lm13.indexOf(sig);
+    if (i < 0) return "";
+    const m = lm13.slice(i).match(/[\s\S]*?\n {8}\}/);
+    return m ? m[0] : "";
+  };
+
+  // 需求 1：拖拽前/拖拽中不预览。判据不新发明，全部照原版：Modify/Remove 态、"光标压在既有线路
+  // 路径点/路段上"= Apply() Default 分支进 Modify 的那条判据（Route 组件 + any(ElementIndex>=0)）。
+  push("v0.13.0 需求1：预览闸门收敛在 PlacementDecisions.SuppressPreview（Modify/Remove、Default 压在路径点上、站台依附范围内）",
+    /public static bool SuppressPreview\(ToolLineState state, bool hoverOnRouteElement, bool hoverOnExistingStop\)/.test(pd13)
+    && pd13.includes("if (state == ToolLineState.Modify || state == ToolLineState.Remove) return true;")
+    && pd13.includes("return state == ToolLineState.Default && hoverOnRouteElement;")
+    && lm13.includes("PlacementDecisions.SuppressPreview(lineState, hoverRouteElement, hoverExistingStop)")
+    && lm13.includes("if (m_settled && !m_previewRefused) MaintainPreview(hover, cursor);"), "");
+  push("v0.13.0 需求1：'光标压在既有路径点上'照抄原版进 Modify 的判据，正在画的临时线路不算",
+    (() => {
+      const b = bodyOf13("private bool HoverOnRouteElement(ControlPoint hover)");
+      return b.includes("if (!math.any(hover.m_ElementIndex >= 0)) return false;")
+        && b.includes("if (EntityManager.HasComponent<Temp>(e)) return false;")
+        && b.includes("return EntityManager.HasComponent<Route>(e);");
+    })(), "");
+  push("v0.13.0 需求1：抑制预览时只解析父级不显示（拖拽落地仍要这条线索），Apply 帧绝不动幽灵",
+    lm13.includes("NoteLandingHint(hover, cursor, hoverExistingStop, lineState)")
+    && (() => {
+      const b = bodyOf13("private void NoteLandingHint(ControlPoint hover, float3 cursor, bool onExistingStop, ToolLineState state)");
+      return b.includes("if (state != ToolLineState.Modify) return;")
+        && b.includes("m_previewParent = parent;") && b.includes("m_hasPreviewSpot = true;");
+    })()
+    && lm13.includes("if (phase != kPhaseApply && (m_previewTemp != Entity.Null || m_previewFed)) RetirePreview();"), "");
+
+  // 需求 3：光标进入既有站台的依附范围 → 不预览、不新建，交原版直接依附。
+  push("v0.13.0 需求3：依附范围判据=工具解析出的站台实体（ConnectedRoute+同类标签）＋4m 兜底半径",
+    /internal const float kStopAttachRadius = 4f;/.test(lm13)
+    && (() => {
+      const b = bodyOf13("private bool IsSameKindStop(Entity e)");
+      return b.includes("EntityManager.HasBuffer<ConnectedRoute>(e)")
+        && b.includes("EntityManager.HasComponent<BusStop>(e)")
+        && b.includes("EntityManager.HasComponent<TramStop>(e)");
+    })()
+    && (() => {
+      const b = bodyOf13("private bool TryResolveLanding(float3 pos, Entity toolParent, out Entity attach, out string why)");
+      return b.includes("if (IsSameKindStop(toolParent))")
+        && b.indexOf("IsSameKindStop(toolParent)") < b.indexOf("ResolveAttachParent(pos, toolParent, out via)");
+    })(), "");
+  push("v0.13.0 需求3：收幽灵时先摘 Error（全世界任何 Error 都会让 GetAllowApply() 整帧为假，玩家的那一笔被吞）",
+    (() => {
+      const b = bodyOf13("private void RetireTemp(Entity e)");
+      return b.includes("ClearGhostError(e);") && b.indexOf("ClearGhostError(e);") < b.indexOf("AddComponent<Game.Common.Deleted>");
+    })()
+    && (() => {
+      const b = bodyOf13("private void ClearGhostError(Entity e)");
+      return b.includes("RemoveComponent<Game.Tools.Error>(e)");
+    })(), "");
+
+  // 需求 2：拖拽落地后把被拖的路径点接到新站台（拖拽没有控制点可改，只能补原版那三个数据）。
+  push("v0.13.0 需求2：拖拽期间记下线路实体与路径点下标（只认成型线路、Temp 不算；悬停点被改写时用射线父级兜底）",
+    (() => {
+      const b = bodyOf13("private void TryCaptureDragRoute(ControlPoint hover)");
+      const r = bodyOf13("private bool IsRealRoute(Entity e)");
+      return b.includes("if (!IsRealRoute(e)) e = RaycastOwner();")
+        && b.includes("m_dragRoute = e;") && b.includes("m_dragRouteIndex = hover.m_ElementIndex.x;")
+        && r.includes("if (EntityManager.HasComponent<Temp>(e)) return false;")
+        && r.includes("return EntityManager.HasBuffer<RouteWaypoint>(e);");
+    })()
+    && lm13.includes("if (lineState == ToolLineState.Modify && hoverOk) TryCaptureDragRoute(hover);")
+    && lm13.includes("DragRoute = m_dragRoute,"), "");
+  push("v0.13.0 需求2：按'下标优先 / 落点最近兜底'在**本笔线路**里找那一枚路径点，12m 内才认",
+    (() => {
+      const b = bodyOf13("private Entity FindDraggedWaypoint(Entity route, int index, float3 spot, out float3 pos)");
+      return b.includes("if (index >= 0 && index < wps.Length)")
+        && b.includes("DynamicBuffer<RouteWaypoint> wps = EntityManager.GetBuffer<RouteWaypoint>(route);")
+        && b.includes("math.distance(candPos.xz, spot.xz)");
+    })()
+    && /internal const float kDragAttachRadius = 12f;/.test(lm13), "");
+  push("v0.13.0 需求2：接站台照原版数据形状写（Connected+VehicleTiming 一次补齐、补 Updated、站台 ConnectedRoute 去重追加）",
+    (() => {
+      const b = bodyOf13("private void AttachDraggedWaypoint(Entity stop, Entity route, int routeIndex, float3 spot, float3 landed)");
+      return b.includes("PlacementDecisions.ShouldAttachDraggedWaypoint(found, onThisStop, elsewhere)")
+        && b.includes("new ComponentTypeSet(ComponentType.ReadWrite<Connected>(), ComponentType.ReadWrite<VehicleTiming>())")
+        && b.includes("EntityManager.SetComponentData(waypoint, new Connected(stop));")
+        && b.includes("AddStopRouteReference(stop, waypoint)") && b.includes("FlushPendingJobs();");
+    })()
+    && (() => {
+      const b = bodyOf13("private int AddStopRouteReference(Entity stop, Entity waypoint)");
+      return b.includes("if (buf[i].m_Waypoint == waypoint) return 0;") && b.includes("buf.Add(new ConnectedRoute(waypoint));");
+    })()
+    && pd13.includes("public static bool ShouldAttachDraggedWaypoint("), "");
+  push("v0.13.0 需求2：松手后'光标跑开'连续 3 帧才算数（0.12.1 实机被松手帧采样跳变骗过一整笔）",
+    /internal const int kDragAwayGraceFrames = 3;/.test(lm13)
+    && lm13.includes("PlacementDecisions.DragCursorLeft(m_dragAwayFrames, kDragAwayGraceFrames)")
+    && lm13.includes("m_dragAwayFrames = awayNow ? m_dragAwayFrames + 1 : 0;")
+    && pd13.includes("public static bool DragCursorLeft(int awayFrames, int graceFrames)"), "");
+  push("v0.13.0 需求2：松手处若已在既有站台依附范围内就不新建（交原版直接依附）",
+    (() => {
+      const b = bodyOf13("private void TryLandDragStop(ControlPoint hover, int phase, ToolLineState lineState)");
+      return b.includes("if (IsAttachStopHover(hover, m_dragLandingSpot))") && b.includes("不再新建");
+    })(), "");
+}
+
+{
+  // —— v0.12.0 需求 1：总开关（「启用模组」）与快捷键的双向联动 ——
+  const modSrc = srcOf("BusLineAutoStopsMod.cs");
+  const settingSrc = srcOf("Setting.cs");
+  const uiSrc = srcOf("Systems/UiCommandSystem.cs");
+  const stateSrc = srcOf("LazyModeState.cs");
+  const rulesSrc = srcOf("TransportKindRules.cs");
+
+  // 真 bug（玩家报"每次开启或关闭总开关后就没用了"）：0.11.x 只有关的那条路径调了
+  // ApplyMasterToHotkey（shouldBeEnabled=false），打开时没有任何一处设回 true。
+  push("v0.12.0 需求1：总开关**打开**时把快捷键接回来（TurnOnHotkey），关掉时才停用",
+    modSrc.includes("public void TurnOnHotkey()")
+    && /public void TurnOffIfLazy\(\)\s*\{\s*ApplyMasterToHotkey\(\);/.test(modSrc)
+    && settingSrc.includes("if (v) BusLineAutoStopsMod.Instance.TurnOnHotkey();")
+    && settingSrc.includes("else BusLineAutoStopsMod.Instance.TurnOffIfLazy();")
+    && settingSrc.includes("[总开关] 启用模组 = "), "");
+  // 自愈闸门：ProxyAction.shouldBeEnabled 的 getter 读的是 m_DefaultActivator.enabled，
+  // 那是别的系统也会改写的共享状态；两个方向都纠，不一致时才写。
+  push("v0.12.0 需求1：快捷键启用状态有自愈闸门（两个方向都纠，只在不一致时写）",
+    modSrc.includes("internal void KeepHotkeyInSync()")
+    && modSrc.includes("if (a.shouldBeEnabled == want) return;")
+    && uiSrc.includes("KeepHotkeyInSync()")
+    && /bool want = LazyModeState\.Enabled && IsBindablePath\(b != null \? b\.path : null\);/.test(modSrc), "");
+  // 总开关只能从设置页切：快捷键回调在总开关关着时直接 return（不给"快捷键把模组打开"留缝）。
+  push("v0.12.0 需求1：快捷键只切懒人模式，永远不能开总开关",
+    /a\.onInteraction \+= \(action, phase\) =>\s*\{\s*if \(phase != InputActionPhase\.Started\) return;\s*if \(!LazyModeState\.Enabled\) return;/.test(modSrc), "");
+  // 默认不保留公交站：决策点只有 SetDefaults 一处（玩家说的"改一下那个值就好了"），
+  // 其余引用都是镜像/兜底，统统指向同一个常量，不会各自漂掉。
+  push("v0.12.0 需求2：退出策略默认不保留公交站（决策点只有 SetDefaults 一处）",
+    rulesSrc.includes("public static ExitDeletePolicy DefaultExitPolicy()")
+    && rulesSrc.includes("return ExitDeletePolicy.DeleteSessionStops;")
+    && settingSrc.includes("m_ExitPolicy = TransportKindRules.DefaultExitPolicy();")
+    && /public override void SetDefaults\(\)[\s\S]{0,400}?m_ExitPolicy = TransportKindRules\.DefaultExitPolicy\(\);/.test(settingSrc)
+    && /public override void SetDefaults\(\)[\s\S]{0,400}?LazyModeState\.ExitPolicy = m_ExitPolicy;/.test(settingSrc)
+    && stateSrc.includes("public static volatile ExitDeletePolicy ExitPolicy = TransportKindRules.DefaultExitPolicy();")
+    && stateSrc.includes("public static volatile ExitDeletePolicy PendingExitPolicy = TransportKindRules.DefaultExitPolicy();"), "");
+  // PendingExitPolicy 只在退出请求排队那一刻写（与 PendingExitCleanup 一起），
+  // ResetForNewWorld 里那一行是死赋值 —— 删掉，别留两处"看起来都在管默认值"的地方。
+  push("v0.12.0 需求2：ResetForNewWorld 不再重置 PendingExitPolicy（死赋值，删掉）",
+    (() => {
+      const rb = (stateSrc.match(/public static void ResetForNewWorld\(\)[\s\S]*?\n {8}\}/) || [""])[0];
+      return rb.length > 0 && !rb.includes("PendingExitPolicy =")
+        && rb.includes("PendingExitCleanup = false;");
+    })(), "");
+}
+
+{
   // —— 安全自查钉子（2026-10-09，逐条对照 BlueprintHub 崩溃交接 Desktop/blueprinthub-handoff.md）——
   // 那份交接的七条隐患归纳成三句话：①别在池线程/回调里调引擎 API，②缓存要有生命周期与负缓存，
   // ③跨线程读写要有编组。本模组没有网络也没有线程（第 1 条钉子就是把这件事钉成事实），
@@ -699,8 +1022,9 @@ push("线路对抗那套逻辑不在编译里（WaypointLink/Ledger/EnsureStopBu
   !utf8Has(dll, "WaypointLinkSystem") && !utf8Has(dll, "PlacedStopLedger") && !utf8Has(dll, "EnsureStopBuffer"), "");
 push("0.8.0 起写创建定义，但禁止喂 WaypointDefinition 缓冲（不代建线路）",
   !anyCode(/AddBuffer<WaypointDefinition>/), "");
-push("仍未碰 applyMode（代按链路保持退役）",
-  !utf8Has(dll, "ToolApplyProxy") && !utf8Has(dll, "GetSetMethod") && !utf8Has(dll, "applyMode"), "");
+// v0.12.0：同 :224 的收窄 —— 只读合法，写入/反射仍然红线。
+push("仍未写 applyMode、仍不用反射（代按链路保持退役）",
+  !utf8Has(dll, "set_applyMode") && !utf8Has(dll, "ToolApplyProxy") && !utf8Has(dll, "GetSetMethod"), "");
 push("面板选资产拦截在位（懒人模式中换资产不切工具）",
   utf16Has(dll, "SelectStopAsset") && utf16Has(dll, "选中资产·懒人") && mjs.includes("SelectStopAsset"), "");
 push("零 Harmony 补丁（卸载不残留）", !/HarmonyPatch|new HarmonyInstance|\.Patch\(/.test(modCs), "");

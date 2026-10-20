@@ -40,8 +40,14 @@ namespace BusLineAutoStops
         public static volatile TransportKind ActiveLineKind = TransportKind.None;
         public static volatile PrefabBase ActiveLinePrefab;
 
-        /// <summary>退出懒人模式时的处置策略（需求 5：只有保留 / 不保留两项，默认保留）。</summary>
-        public static volatile ExitDeletePolicy ExitPolicy = ExitDeletePolicy.KeepStops;
+        /// <summary>
+        /// 退出懒人模式时的处置策略（需求 5：只有保留 / 不保留两项）。
+        ///
+        /// 默认值**只在 <see cref="Setting.SetDefaults"/> 一处决定**（v0.12.0 起是"不保留"）。
+        /// 这里的字段初值只是"热路径镜像从没被同步过"时的死值，正常流程一定会被
+        /// <see cref="Setting.SyncToState"/> 覆盖，所以刻意写成与 SetDefaults 同值只为读代码不误导。
+        /// </summary>
+        public static volatile ExitDeletePolicy ExitPolicy = TransportKindRules.DefaultExitPolicy();
 
         /// <summary>
         /// 需求 4（0.9.0）：有轨电车是否放开。本版恒 false（Setting.SyncToState 强制归零），
@@ -63,9 +69,13 @@ namespace BusLineAutoStops
         /// </summary>
         public static volatile bool DwellReady;
 
-        /// <summary>退出待执行的清理（在系统帧内消费，不在按键回调里改世界）。</summary>
+        /// <summary>
+        /// 退出待执行的清理（在系统帧内消费，不在按键回调里改世界）。
+        /// <see cref="PendingExitPolicy"/> 是排队那一刻写上的真实策略，初值同样是死值
+        /// （退出请求一定先写它再置 PendingExitCleanup），默认值只在 SetDefaults 一处决定。
+        /// </summary>
         public static volatile bool PendingExitCleanup;
-        public static volatile ExitDeletePolicy PendingExitPolicy = ExitDeletePolicy.KeepStops;
+        public static volatile ExitDeletePolicy PendingExitPolicy = TransportKindRules.DefaultExitPolicy();
 
         /// <summary>前端按钮高亮 / 警告文案 key（空=无警告）。</summary>
         public static volatile string WarningLocaleKey = "";
@@ -121,7 +131,9 @@ namespace BusLineAutoStops
         {
             LazyEnabled = false;
             PendingExitCleanup = false;
-            PendingExitPolicy = ExitDeletePolicy.KeepStops;
+            // 不重置 PendingExitPolicy：它只在退出请求排队那一刻与 PendingExitCleanup 一起写
+            // （BusLineAutoStopsMod.ExitLazyMode），而这里已经把 PendingExitCleanup 清成 false，
+            // 那一行就是死赋值。默认值只在 Setting.SetDefaults 一处决定。
             PendingLineKind = TransportKind.None;
             ModeKind = TransportKind.None;
             SelectedStationPrefab = null;

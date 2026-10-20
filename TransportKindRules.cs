@@ -90,5 +90,20 @@ namespace BusLineAutoStops
         {
             return policy == ExitDeletePolicy.DeleteSessionStops;
         }
+
+        /// <summary>
+        /// 玩家没动过选项时用的处置策略（需求 2，v0.12.0 的默认值改成**不保留**）。
+        ///
+        /// 为什么默认要删：懒人模式落地的站台是"跟着这次画线临时放下的"，玩家想要的往往是
+        /// "这次没画完就退出，别在地图上留一串孤儿站台"。保留反而是需要主动选的那一项
+        /// （想接着拿这些站台连线）。这个默认值只有在**本次会话里真的由模组放过站**时才有意义。
+        ///
+        /// 单独抽成纯函数是为了让离线 T3 能断言"默认值就是删除"，避免默认值散落在
+        /// Setting.SetDefaults / LazyModeState 字段初始化 / ResetForNewWorld 三处各写一遍而漂掉。
+        /// </summary>
+        public static ExitDeletePolicy DefaultExitPolicy()
+        {
+            return ExitDeletePolicy.DeleteSessionStops;
+        }
     }
 }

@@ -267,6 +267,13 @@ namespace BusLineAutoStops.Systems
 
             LazyModeState.ClearWarningIfExpired(UnityEngine.Time.realtimeSinceStartup);
 
+            // 需求 1（v0.12.0）：总开关的开/关都要让快捷键跟着走。0.11.x 只在"关"那条路径上
+            // 写了 shouldBeEnabled，于是关一次再打开，图标回来了、键却一直是停用的
+            // （玩家报的"每次开启或关闭总开关后快捷键就没用了"就是它）。
+            // 这条自愈闸门两个方向都纠，并且顺带兜住外部系统改写 activator 的情况；
+            // 不一致时才写，平稳帧零写入。
+            if (BusLineAutoStopsMod.Instance != null) BusLineAutoStopsMod.Instance.KeepHotkeyInSync();
+
             // 总开关关了就不做任何轮询识别（本系统每帧都跑，省一次是一次）
             if (!LazyModeState.Enabled) return;
 

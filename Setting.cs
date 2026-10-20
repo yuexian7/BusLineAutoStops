@@ -41,7 +41,7 @@ namespace BusLineAutoStops
         // 版本五处统一（Mod.cs kVersion / Setting.kVersion / Frontend mod.json /
         // PublishConfiguration.xml / releases 快照）：0.10.0 时这里曾落后两版，
         // 玩家在设置页看到错版本号、报日志误判——pack-release 的版本钉子已把本文件纳入
-        public const string kVersion = "0.11.2";
+        public const string kVersion = "0.13.0";
         public const string kAuthor = "yuexian";
 
         public const string kKoFiUrl = "https://ko-fi.com/yuexian7";
@@ -53,14 +53,31 @@ namespace BusLineAutoStops
 
         public Setting(IMod mod) : base(mod) { }
 
-        private ExitDeletePolicy m_ExitPolicy = ExitDeletePolicy.KeepStops;
+        /// <summary>
+        /// 退出策略的**唯一决策点**是 <see cref="SetDefaults"/>（玩家没动过选项时用它）。
+        /// 这个字段初值只在"设置文件缺失 / 读取失败"、框架拿不到 SetDefaults 时兜底，
+        /// 所以与 SetDefaults 取同一个常量（同一个来源，不会各自漂掉）。
+        /// </summary>
+        private ExitDeletePolicy m_ExitPolicy = TransportKindRules.DefaultExitPolicy();
         private bool m_AutoPlaceEnabled = true;
 
         /// <summary>需求 4（0.9.0）：本版恒 false —— 有轨电车那条是置灰的预留条目。</summary>
         private bool m_TramEnabled = false;
 
         /// <summary>
-        /// 总开关。关的时候：左上角按钮消失、快捷键无效、懒人模式立刻退出（并撤掉跟手站台）。
+        /// 需求 1（v0.12.0）：总开关，改名 **「启用模组」**。
+        ///
+        /// 语义（玩家原话）："开启后游戏内左上角的图标按钮就显示，关闭就不显示，整个模组完全关闭
+        /// 恢复原版行为，总开关无法通过快捷键开启。开启总开关后，懒人模式可以通过快捷键或图标按钮
+        /// 进入或退出。"
+        ///
+        /// 所以这里管的是**模组本身在不在**，不是懒人模式：
+        /// · 关：左上角图标不出现（前端 `master !== false` 才渲染）、快捷键 action 停用、
+        ///   懒人模式立刻退出并撤掉跟手站台、世界侧系统一行都不写（LazyModeState.Enabled 早退）。
+        /// · 开：图标出现、快捷键按"有没有绑了可用的键"重新接上（见 BusLineAutoStopsMod.TurnOnHotkey）。
+        /// · **快捷键只切懒人模式，永远不切总开关** —— 回调在 OnToggleLazy 里被
+        ///   `if (!LazyModeState.Enabled) return;` 拦住（见 BusLineAutoStopsMod.RegisterHotkeys），
+        ///   所以总开关关着时按快捷键只会给一句提示，不会把模组打开。
         /// </summary>
         [SettingsUISection(kTabGeneral, kGroupMaster)]
         public bool AutoPlaceEnabled
@@ -73,10 +90,12 @@ namespace BusLineAutoStops
                 m_AutoPlaceEnabled = v;
                 LazyModeState.Enabled = v;
                 LazyModeState.UiSeq++;
-                BusLineAutoStopsMod.log.Info("[总开关] 站台自动放置 = " + v);
-                if (!v && BusLineAutoStopsMod.Instance != null)
+                BusLineAutoStopsMod.log.Info("[总开关] 启用模组 = " + v);
+                if (BusLineAutoStopsMod.Instance != null)
                 {
-                    BusLineAutoStopsMod.Instance.TurnOffIfLazy();
+                    // 两个方向都要跟：关掉要停 action + 退懒人模式；打开要把 action 接回来。
+                    if (v) BusLineAutoStopsMod.Instance.TurnOnHotkey();
+                    else BusLineAutoStopsMod.Instance.TurnOffIfLazy();
                 }
             }
         }
@@ -196,10 +215,13 @@ namespace BusLineAutoStops
 
         public override void SetDefaults()
         {
+            // 需求 1（v0.12.0）：总开关默认**开**（模组装上就能用，图标就在左上角）。
             m_AutoPlaceEnabled = true;
-            m_ExitPolicy = ExitDeletePolicy.KeepStops;
-            ExitPolicy = ExitDeletePolicy.KeepStops;
-            LazyModeState.ExitPolicy = ExitDeletePolicy.KeepStops;
+            // 需求 2（v0.12.0）：退出策略默认改成**不保留公交站**。
+            // 默认值只在"玩家没动过选项"时生效；老存档里明确选过保留的仍是保留（值读回来就是 0）。
+            m_ExitPolicy = TransportKindRules.DefaultExitPolicy();
+            ExitPolicy = m_ExitPolicy;
+            LazyModeState.ExitPolicy = m_ExitPolicy;
             LazyModeState.Enabled = true;
             m_TramEnabled = false;
             LazyModeState.TramEnabled = false;
