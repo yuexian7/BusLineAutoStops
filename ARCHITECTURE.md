@@ -2,7 +2,7 @@
 
 给下一个接手者的最小集：现行机制、硬不变量、构建命令、待办。
 逐版迭代史与机制取证（96 条校正、每版实机日志）在 `docs/history/开发笔记-v0.1.1~v0.11.1.md`（已冻结，只查不改）。
-当前版本状态：**v0.13.0 已本地部署、离线门禁全绿、已上传线上（Private）**：ModId 160528 / 线上从 0.11.2 直接到 0.13.0 / dll 102400B / **仍 Private**。
+当前版本状态：**v0.13.0 已本地部署、离线门禁全绿、已上传线上（versionId=14，0.13.0，仍 Private）**：ModId 160528 / 线上从 0.11.2 直接到 0.13.0 / dll 102400B / 线上包 59078B。
 0.13.0 修玩家三条反馈：拖拽前不再模拟出公交站、拖拽落地的路径点依附到新站台、光标进入既有站台依附范围时不模拟（交原版直接依附）。
 **0.12.0 / 0.12.1 只在本机验证过、从未上传**（线上一直停在 0.11.2），它们的内容（拖拽放站、松手帧闪退修复、总开关与快捷键联动、退出策略默认不保留）合并进 0.13.0 一起上线。
 
@@ -206,11 +206,26 @@ MSYS_NO_PATHCONV=1 DOTNET_ROLL_FORWARD=Major dotnet "<游戏>\Cities2_Data\Conte
 **已验证（离线，2026-10-21 v0.13.0）**
 
 - `node scripts/compile-check.js` 0 错误（13 源文件 → 102400B）。
-- `node scripts/pack-release.js 0.13.0` 全绿：175 枚钉子（含 v0.13.0 新增九枚：预览闸门三条 / 依附范围两条 / 拖拽依附三条 / 松手宽限一条）。
+- `node scripts/pack-release.js 0.13.0` 全绿：176 枚钉子（含 v0.13.0 新增十枚：预览闸门三条 / 依附范围两条 / 拖拽依附三条 / 松手宽限一条 / ChangeLog 上限一条）。
 - `node scripts/verify.cjs` → 版本四处一致 + T3 `pass=90 fail=0`（新增 17 条：`SuppressPreview` 8 / `ShouldAttachDraggedWaypoint` 4 / `DragCursorLeft` 5）。
 - 版本号五处统一：`BusLineAutoStopsMod.kVersion` / `Setting.kVersion` / `Frontend/mod.json` / `PublishConfiguration.xml` 的 ModVersion + mjs 横幅（pack 钉 `mjs 横幅版本一致`）。
 - `releases/0.13.0/` 已生成本版快照（dll / mjs / mod.json / 两张图标）。
 - 部署目录四件套与版本已核对（`--deployed`）：dll 102400B / mjs / mod.json(0.13.0) / 图标齐全；日志仍走 `ModsData`。
+- **发布已成功**：`NewVersion` → `pull-live.js` 回读 `versionId=14 userVersion=0.13.0 size=59078`（created 2026-10-20T19:11:21Z），
+  ModPublisher 侧 `Access Control Level State: Private`，四条外链与 Tag/GameVersion 原样。
+
+**本轮两处工具链修正（都是发布当场被咬出来的）**
+
+- `verify.cjs` 的"最新前端源码比部署 mjs 新"原来把 `Frontend/mod.json` 也算进**编译输入**，可它是
+  `set-store-copy.js` 写、deploy 原样拷的元数据 —— 于是"改版本号/商店文案 → 重跑 set-store-copy"必然让门禁变红
+  （第一批 0.13.0 出包时就是这样，而 webpack 的 compareBeforeEmit 又不会重写内容相同的 dist mjs）。
+  现在只算 `Frontend/src`；mod.json 的一致性仍由"`部署 mod.json = Frontend 源`"那条内容判据管。
+- `set-store-copy.js` 的 `assertSafe` 补上 **ChangeLog ≤ 5000 字符**：发布器实测
+  `changelogEntry: Must be a string between 1 and 5000 length`，而且是在**传完文件之后**才报。
+  为了压进 5000，商店 ChangeLog 只保留 v0.13.0 与 v0.11.2 两段（v0.11.0 / v0.11.1 段落从线上文案里退场，
+  源码与 git 历史里仍在）。
+
+**未验证（要靠玩家本地实机）**
 
 **未验证（要靠玩家本地实机）**
 
@@ -231,6 +246,8 @@ MSYS_NO_PATHCONV=1 DOTNET_ROLL_FORWARD=Major dotnet "<游戏>\Cities2_Data\Conte
 - 自动站台不写 `Game.Tools.Recent` → 建不扣钱、铲不退款（净零刷不出钱），是玩家定案的设计（校正 #23）。
 - 商店长描述里仍有"自动放置/Auto-place"字样（功能名与 mod 名如此），按"商店描述不动"保留。
 - 第三方资产的 `BusStop` 标记能否脱离连接缓冲单独存在：**未取证**（P2-5 只证明了原版路径）。
+- 商店 ChangeLog 字段受发布器 5000 字符上限约束，只保留最近两段；更早版本的历史在 git 与 `docs/history/`。
+- 线上元数据（描述 / 链接 / AccessLevel）只能人工读网页核对：私有模组的 API 侧 403，`pull-live.js` 只核对版本表。
 
 ## 已知待办（按优先级）
 

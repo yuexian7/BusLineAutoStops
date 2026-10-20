@@ -140,7 +140,11 @@ function deployed() {
     if (!banner || !cur || !new RegExp("Version:\\s*" + cur.replace(/\./g, "\\.")).test(banner[0])) {
       fail("部署 mjs 的横幅里没有本版版本号（横幅缺了游戏还会把 .mjs 当无效模块，见 Modding.log m_ModuleId=null）");
     } else pass("部署 mjs 横幅版本 = " + cur);
-    const feNewest = newestOf([path.join(root, "Frontend", "src"), path.join(root, "Frontend", "mod.json")], () => true, ["node_modules"]);
+    // 只把**参与编译**的前端源码算进来：Frontend/mod.json 是 webpack 的输入吗？不是 —— 它是被
+    // `scripts/set-store-copy.js` 写、被 deploy 原样拷过去的元数据。以前把它算进"最新前端源码"，
+    // 于是"改完版本号/商店文案 → 重跑 set-store-copy"必然让这条门禁变红（2026-10-21 v0.13.0 出包时
+    // 就是这么红的），而 mod.json 的内容一致性另有下面那条"部署 mod.json = Frontend 源"管。
+    const feNewest = newestOf([path.join(root, "Frontend", "src")], () => true, ["node_modules"]);
     if (feNewest && feNewest.mtime - 2000 > a.mtimeMs) {
       fail("最新的 " + path.relative(root, feNewest.path) + " 比部署 mjs 新 → 前端改动没编译进去");
     } else pass("部署 mjs 不早于最新前端源码");

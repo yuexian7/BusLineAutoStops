@@ -56,27 +56,17 @@ const zhLong = [
 
 /* ------------------------------ ChangeLog ------------------------------- */
 const enLog = [
-  "v0.13.0 dragging a line is consistent now: no preview while you are about to drag, and the path point you dragged is attached to the stop that lands.",
-  "- Fixed (no preview while you are about to drag): moving the mouse onto one of a line's own path points no longer simulates a bus stop. A left click there starts dragging that point, so the mod now stays quiet - before the press and during the whole drag - and only the game's own preview remains on screen. The road under the drag is still remembered silently, so the stop that lands when you let go goes to the right road.",
-  "- Fixed (the path point attaches to the new stop): when a drag places a stop, the path point you dragged is connected to it, so buses really call there. Before, the stop appeared but the point stayed loose on the road, because the game had already committed the line before the stop existed.",
-  "- Fixed (a stop right next to where you point): if the cursor is already inside an existing bus stop's attach range, the mod no longer simulates a stop of its own - the game snaps the path point onto that stop by itself. The simulated one used to collide with something at the slightly offset spot, and that could get your click refused.",
-  "- Fixed (crash when a drag ended, in the test build after 0.11.2): the placement itself was reached, but on that single frame the game both removed a ghost and re-created one at the same spot while the mod fed a new definition into that same frame. Placement now waits one frame: releasing only records the spot, and the stop is fed on the next frame. The result is unchanged, the stop just appears a frame later.",
-  "- Fixed (a drag that cannot resolve the road no longer dies on one bad frame): the spot stays frozen where you let go, but one frame of cursor jitter right after the release no longer throws the drag away. A drag that still cannot be resolved retries at the release spot for a few frames instead of chasing the cursor.",
-  "- Fixed (hotkey after using the master switch): turning the mod off and back on used to disable the toggle hotkey for good. Both directions are handled now and the state is re-checked every frame, so it also recovers if the game resets it.",
-  "- Changed (master switch): it is now called Enable the mod, and it is the mod itself rather than lazy mode. Off means the top-left icon disappears and the game behaves exactly as it would without the mod.",
-  "- Changed (default): when lazy mode ends, the stops it placed this session are removed by default. Choose Keep the bus stops to go on using them; a stop another line already uses is always kept.",
+  "v0.13.0 fixes the drag chain: nothing is simulated before you press, and the path point you drag is attached to the stop that lands.",
+  "- Fixed (no preview before you press): moving the mouse onto one of a line's own path points no longer shows a simulated stop, and nothing is shown during the drag either - that click starts a drag, not a placement. The road under the drag is still remembered silently, so the stop lands on the right road when you let go.",
+  "- Fixed (the dragged path point attaches to the new stop): the point you dragged is connected to the stop that lands, so buses really call there. Before, the stop appeared but the point stayed loose on the road.",
+  "- Fixed (a stop right next to where you point): if the cursor is already inside an existing stop's attach range, the mod no longer simulates a stop - the game snaps the path point onto that stop by itself. The simulated one could collide at the slightly offset spot and get your click refused.",
+  "- Also in this version, from the test builds after 0.11.2: releasing a drag no longer crashes the game (placement waits one frame now); a drag that cannot resolve the road no longer dies on a single bad frame; the toggle hotkey recovers after using the master switch; and ending lazy mode removes the stops this session placed by default, with Keep the bus stops as the option.",
   "v0.11.2 hardening release: nothing about how a stop gets placed changed, and you should feel no difference while playing.",
   "- Fixed (diagnostics): the log line that reports the outcome of a preview - how far the game snapped it from the point we fed it, which side of the road it landed on, whether the game accepted the spot - was gated on the same switch as the earlier line, so it never appeared in BusLineAutoStops.log at all. It is output again now, so a log file you send with a report can say exactly where a stop would have landed.",
   "- Safer (leaving lazy mode): when the mode ends, the mod now waits for the game's in-flight work to finish before it takes back the preview ghost - the same order it already used when the mode starts. That closes one more route to the rare crash that happens when structure changes are made while handles are held.",
   "- Safer (asset panel): the filtered asset list is now remembered only after it has been built successfully, so a failure half way through can no longer serve the previous list back as if it were the new one.",
   "- Duplicate check: deciding whether a bus stop is already there no longer depends on whether a line has connected to it. The game gives every stop its connection buffer the moment it is created, so the check now follows the game's own definition of a stop and stays correct for assets that carry the label without the buffer.",
   "- Author side, no effect on players: before a build is considered ready, the tooling checks the deployed folder is complete (dll, frontend, mod.json, icons), that the version number matches in all four places it is written, and that the compiler is found by asking the SDK rather than by a pinned path.",
-  "v0.11.1 the lazy-mode highlight no longer depends on the panel filter, and the duplicate diagnostic names the panel it came from.",
-  "- Changed (lazy mode): the lit stop asset stays lit even when the panel filter list fails to load - the highlight now follows lazy mode itself, one link less to break. - Improved (diagnostics): the duplicate-count line also names the panel it came from and lists up to three duplicated assets, so a log report can be tied to one category instead of a guess.",
-  "v0.11.0 the transport panel lights up only the asset you clicked, and lazy mode keeps both the line tool and the stop asset you are placing lit.",
-  "- Fixed (panel highlight): clicking a bus stop asset in the transport panel used to light up a whole group of similar-looking entries, as if several had been clicked at once. The game decides which entry is selected by the asset's entity alone - same entity, same highlight - so an asset that is registered in a category more than once shows up in the panel several times, and all of those entries lit up together. The panel is now normalised on our side before it reaches the game's grid: entries are keyed by their entity and duplicates are dropped, so exactly one entry can ever light up, whichever asset you pick and whether lazy mode is on or off. The log gains a line that counts the duplicates it found, so a report still tells them apart if anything is left.",
-  "- New (lazy mode highlight): while lazy mode is on the panel now keeps two entries lit - the line tool, which the game lights by itself because the tool is the line tool, and the stop asset you are currently placing, which the game never lights on its own because picking a stop in lazy mode does not switch your tool. Switch to another stop asset and the light moves with it, so you can always see which one is live.",
-  "- Unchanged: tram stops remain a separate, greyed option marked “not available yet”; nothing is placed without your own left click; no custom component types and no patched game methods, so removing the mod cannot corrupt a save.",
 ].join(NL);
 
 const zhLog = [
@@ -95,12 +85,6 @@ const zhLog = [
   "- 更稳（资产面板）：过滤名单改成算成功之后才记账，中途出问题时不会把上一份名单当成新名单发回面板。",
   "- 查重判据：判断“这里是不是已经有公交站”不再取决于有没有线路连上它。原版在建公交站的那一刻就已经把连接缓冲一起给了它，所以现在的判据跟原版自己认公交站的方式一致，遇到只带公交站标记、没有连接缓冲的资产也不会漏判。",
   "- 开发侧（不影响玩家）：出包前会先检查部署目录四件套齐全（本体、前端、mod.json、图标）、版本号四处一致，编译工具的路径也不再写死某一个 SDK 版本。",
-  "v0.11.1 懒人模式高亮不再依赖面板过滤名单；去重自检日志会写明来自哪个面板、重复的是哪几枚资产。",
-  "- 调整（懒人模式）：当前公交站资产的高亮在过滤名单取不到时照样亮 —— 高亮现在只跟随懒人模式本身，少了一条会断的链。 - 改进（诊断）：去重计数那一行现在会写明来自哪个面板，并列出最多三枚重复资产，于是日志报告能精确对应到某一个分类，而不用猜。",
-  "v0.11.0 点击资产只点亮这一个；懒人模式开着时，线路工具和你正在用的公交站资产两处同时点亮。",
-  "- 修复（面板高亮）：在交通面板里点一个公交站资产，以前会把一批看着差不多的条目一起点亮，像同时点了好几个。原版判断“哪一条被选中”只看资产实体本身 —— 实体相同就一起点亮；而同一个资产在分类里登记了几次，面板里就会出现几条，点它就同时亮一片。现在面板在送到原版网格之前先按实体键归一化：重复条目只留第一条，于是无论点哪个资产、开不开懒人模式，都只可能亮一个。日志里另留一行去重计数，万一还有别的原因也能分清。",
-  "- 新增（懒人模式高亮）：懒人模式开着时，面板同时点亮两处 —— 线路工具（这一处原版自己就会亮，因为工具就在线路工具上）和你正在使用的公交站资产（这一处原版永远不亮：懒人模式里点公交站资产不切工具）。换一枚公交站资产，点亮跟着换，随时看得出当前放的是哪一枚。",
-  "- 保持不变：有轨电车仍是设置页里单独一条、置灰并注明“暂未上线”；不按左键什么都不会落地；不写自定义组件类型、不打任何补丁，卸载模组不会让存档报错。",
 ].join(NL);
 
 /* ------------------------------- 写入 ----------------------------------- */
@@ -114,6 +98,9 @@ function assertSafe(text, where) {
   // 短描述上限 200（发布器实测：shortDescription: Must be a string between 1 and 200 length，
   // 超了整次 NewVersion 直接失败，而且它是在传完文件之后才报的 —— 别留给发布器发现）。
   if (where === "ShortDescription" && text.length > 200) bad.push("长度 " + text.length + " > 200");
+  // 发布器实测（2026-10-21 NewVersion 0.13.0 被拒）：changelogEntry 上限 5000，
+  // 而且是**传完文件之后**才报 —— 别留给发布器发现。
+  if (where === "ChangeLog" && text.length > 5000) bad.push("长度 " + text.length + " > 5000（发布器上限）");
   if (/\*\*|__|^#/.test(text)) bad.push("混进了 Markdown 记号");
   if (bad.length) {
     console.error(where + " 含非法字符：" + bad.join("、"));

@@ -884,6 +884,15 @@ const modCs = fs.readFileSync(path.join(root, "BusLineAutoStopsMod.cs"), "utf8")
     && lm13.includes("PlacementDecisions.DragCursorLeft(m_dragAwayFrames, kDragAwayGraceFrames)")
     && lm13.includes("m_dragAwayFrames = awayNow ? m_dragAwayFrames + 1 : 0;")
     && pd13.includes("public static bool DragCursorLeft(int awayFrames, int graceFrames)"), "");
+  // 发布器实测（2026-10-21 NewVersion 0.13.0 被拒）：changelogEntry 上限 5000 字符，
+  // 而且是"传完文件之后"才报 —— 所以这条上限必须写进 set-store-copy 的 assertSafe，别留给发布器发现。
+  push("v0.13.0：ChangeLog 超过发布器 5000 字符上限就在写文案时当场红（ShortDescription 200 同款）",
+    (() => {
+      // 注意：srcOf 只查 C# 源码表，脚本要自己读盘（第一版写成 srcOf("scripts/...") 永远拿到空串）。
+      const sc = fs.readFileSync(path.join(root, "scripts", "set-store-copy.js"), "utf8");
+      return sc.includes('where === "ChangeLog" && text.length > 5000')
+        && sc.includes('where === "ShortDescription" && text.length > 200');
+    })(), "");
   push("v0.13.0 需求2：松手处若已在既有站台依附范围内就不新建（交原版直接依附）",
     (() => {
       const b = bodyOf13("private void TryLandDragStop(ControlPoint hover, int phase, ToolLineState lineState)");
