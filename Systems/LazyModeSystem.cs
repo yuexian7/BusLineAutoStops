@@ -403,6 +403,28 @@ namespace BusLineAutoStops.Systems
         /// <summary>已落地的会话站台（LIFO，右键撤点从栈顶删；线路完成时清空=全部保留）。</summary>
         private readonly List<Entity> m_placed = new List<Entity>();
 
+        /// <summary>
+        /// 需求 4（v0.14.0）：本会话里由模组自动放置的**全部**站台（点击落地 + 拖拽落地），
+        /// 外加"它曾经连上过路径点吗"。用途只有一个：玩家右键删掉路径点时，把依附在那一枚
+        /// 路径点上的站台一起删掉（判据在 <see cref="PlacementDecisions.SessionStopLostWaypoint"/>）。
+        ///
+        /// 为什么不能复用 <see cref="m_placed"/>：那是**撤销栈**，拖拽落地的一笔按 v0.12.0 的约定
+        /// 刻意不进栈（<see cref="PlacementDecisions.DragCommitIsUndoable"/> 恒 false），
+        /// 而玩家这次要的规则恰恰主要针对拖拽那一路；两者的生命周期也不同（m_placed 退出时
+        /// 可能按策略被删，本账只管"还能不能跟着路径点一起删"）。
+        ///
+        /// 清空时机就是需求边界：**退出懒人模式**（RunExitCleanup）与**进入新会话**（BeginSession）。
+        /// 清掉之后这条规则再也碰不到它们 —— "退出懒人模式后就算彻底放置好了"就是这么落实的。
+        /// 只装我们自己的实体，所以玩家手摆的站台永远不会被这条规则删。
+        /// </summary>
+        private struct SessionStop
+        {
+            public Entity Stop;
+            /// <summary>曾经见过至少一枚活着的路径点连着它（线路画完 / 拖拽依附之后才会 true）。</summary>
+            public bool HadWaypoint;
+        }
+        private readonly List<SessionStop> m_sessionStops = new List<SessionStop>();
+
         /// <summary>已点击、等原版把 Temp 造出来的待提交。</summary>
         private struct PendingCommit
         {
@@ -544,6 +566,14 @@ namespace BusLineAutoStops.Systems
         protected override void OnUpdate()
         {
             if (LazyModeState.Broken) return;
+
+            // —— 需求 5（v0.14.0）：总开关关掉后，本系统一整帧只做这一次静态 bool 读。
+            //    玩家要求"关闭总开关或卸载模组后对存档完全没影响、性能帧数都不要有影响"。
+            //    这里必须越过 warning 计时与两次标志判断，所以放在最前面；但**两件收尾工作不能跳**：
+            //    · PendingExitCleanup：关总开关那一刻排的"退出清理"（收幽灵 / 按策略处置本次站台）；
+            //    · m_beginCleanupPending：进会话时排的"收上一场残留"。
+            //    两者都只在切换的瞬间为真，稳态下就是三个 bool 读 + 返回，与"没装这个模组"等价。
+            if (!LazyModeState.Enabled && !LazyModeState.PendingExitCleanup && !m_beginCleanupPending) return;
 
             float now = UnityEngine.Time.realtimeSinceStartup;
             LazyModeState.ClearWarningIfExpired(now);
@@ -699,6 +729,13 @@ namespace BusLineAutoStops.Systems
             TrackControlPointCount(cps);
             ResolvePendingCommits(cps);
 
+            // —— 需求 4（v0.14.0）：跟着路径点一起删。
+            //     玩家："在修改已有线路时，该次懒人模式下自动放置的公交站，会随右键删除路径点而被删除。"
+            //     Apply 帧一律不动世界（本项目里"同帧互斥结构改动"= 空托管栈原生崩溃的同义词，
+            //     笔记 #63/#89），所以只在非 Apply 帧上做；删除动作本身在 MaintainSessionStops 里
+            //     先 FlushPendingJobs 再 AddComponent<Deleted>。
+            if (phase != kPhaseApply) MaintainSessionStops();
+
             // —— 需求 2（v0.12.0）：拖拽松手这一帧 = 原版把线路修改提交（Apply，RouteToolSystem.cs:2025-2052），
             //     公交站以前正是在这一步悄悄丢掉的（Modify 态控制点恒为 1，TrackControlPointCount 看不见）。
             //
@@ -817,7 +854,13 @@ namespace BusLineAutoStops.Systems
             bool hoverExistingStop = hoverOk
                 && IsAttachStopHover(hover, cursor, m_settled || m_previewTemp != Entity.Null || m_previewFed);
             bool previewOk = !PlacementDecisions.SuppressPreview(lineState, hoverRouteElement, hoverExistingStop);
-            if (previewOk)
+            // v0.14.0：**Apply 帧绝不喂定义**。0.13.0 把 Modify 也拦掉了，所以"拖拽松手那一帧
+            // 手里还有一枚预览幽灵、而同帧又在喂新定义"这件事从来没发生过；0.14.0 把预览还给了
+            // 拖拽（需求 1），这个组合就真的会出现 —— 而 ApplyObjectsSystem.Create() 对
+            // Temp（m_Original == Null）是**不过校验、不计费**直接转正真建筑的（笔记 #71）。
+            // 所以闸门先跟相位做与：Apply 帧只关闸、不喂、不收（收也留到下一帧，理由同下方 else 分支）。
+            bool previewOkNow = previewOk && phase != kPhaseApply;
+            if (previewOkNow)
             {
                 // —— 需求 1（v0.12.0）"停着不动也偶尔闪一下"：原版停稳帧会间歇写 Clear（路径重算完成、
                 //     悬停吸附搬家都会走到 ：2206-2229 那几个分支），ToolClearSystem 把整个 Temp 块标
@@ -1078,6 +1121,8 @@ namespace BusLineAutoStops.Systems
                 {
                     float3 landed = landedAt;
                     m_stops.Add(temp, landed);
+                    // 需求 4（v0.14.0）：不管走的哪条路，都记进"本会话自动放置"的账。
+                    RememberSessionStop(temp);
                     if (p.DragCommit && !PlacementDecisions.DragCommitIsUndoable())
                     {
                         // 需求 2（v0.12.0）：拖拽落地的那一笔**不进 m_placed** —— 每次拖拽新增都算完成，
@@ -2923,6 +2968,16 @@ namespace BusLineAutoStops.Systems
                     + " 本次会话站点=" + (deleted + kept) + " 删除=" + deleted + " 保留=" + kept);
             }
             m_placed.Clear();
+            // 需求 4（v0.14.0）：会话结束 = 这条"跟着路径点一起删"的规则到此为止。
+            // 账一清，这些站台就**彻底放置好了**：再进懒人模式也删不到它们（玩家明确要求）。
+            // 注意这里只清账、不删站台：拖拽落地的那一路本来就不在 m_placed 里，按 v0.12.0 的
+            // 约定"拖拽一次即完成"，退出策略也不该把它们收走。
+            if (m_sessionStops.Count > 0)
+            {
+                BusLineAutoStopsMod.log.Info("[懒人模式] 退出：本会话 " + m_sessionStops.Count
+                    + " 枚自动站台转为永久（右键盘点删除规则结束）");
+                m_sessionStops.Clear();
+            }
             RetirePendingTemps();
             m_pending.Clear();
             m_dragLandingArmed = false; // 需求 2（v0.12.0）：会话结束，补提交作废（落点也随清理一起消失）
@@ -2986,6 +3041,102 @@ namespace BusLineAutoStops.Systems
             return false;
         }
 
+        /// <summary>
+        /// 需求 4（v0.14.0）：把"本会话由模组落地的站台"记进账。点击落地与拖拽落地**都记**，
+        /// 因为玩家要的规则是"该次懒人模式下自动放置的公交站"，不分来路；而
+        /// <see cref="m_placed"/> 作为撤销栈只收点击那一路（见 <see cref="SessionStop"/> 的注释）。
+        /// 已在账里就只更新（幂等）：补提交重试可能同一枚站台走到这里两次。
+        /// </summary>
+        private void RememberSessionStop(Entity stop)
+        {
+            if (stop == Entity.Null) return;
+            for (int i = 0; i < m_sessionStops.Count; i++)
+            {
+                if (m_sessionStops[i].Stop != stop) continue;
+                return;
+            }
+            m_sessionStops.Add(new SessionStop { Stop = stop, HadWaypoint = false });
+        }
+
+        /// <summary>这枚站台还挂着几枚**活着的**路径点（Deleted 标记的算死）。</summary>
+        private int CountLiveWaypoints(Entity stop)
+        {
+            if (!EntityManager.HasComponent<ConnectedRoute>(stop)) return 0;
+            DynamicBuffer<ConnectedRoute> buf = EntityManager.GetBuffer<ConnectedRoute>(stop);
+            int live = 0;
+            for (int i = 0; i < buf.Length; i++)
+            {
+                Entity wp = buf[i].m_Waypoint;
+                if (!EntityManager.Exists(wp)) continue;
+                if (EntityManager.HasComponent<Game.Common.Deleted>(wp)) continue;
+                live++;
+            }
+            return live;
+        }
+
+        /// <summary>
+        /// 需求 4（v0.14.0）：本会话自动放置的站台，**路径点被右键删掉时跟着删**。
+        ///
+        /// 为什么用"站台自己的 ConnectedRoute 缓冲"当判据、而不是去抓右键事件：
+        /// 原版删路径点走的是 `State.Remove` → ApplyRoutesSystem 删实体，随后
+        /// `WaypointConnectionSystem` 的 Deleted 分支会把那一枚从站台的 `ConnectedRoute` 里
+        /// `RemoveValue` 掉。也就是说"站台曾经连着、现在一枚活的都不剩"本身就是原版留下的
+        /// 证据 —— 不用我们猜玩家点了哪一枚、也不用碰原版的输入与状态机。
+        ///
+        /// 成本：账里只有本会话自动放置的那几枚站台，每帧每人一次 Group 存在性 + 一个小缓冲遍历，
+        /// 与"扫世界"无关；账空时是一个 `Count == 0` 的早退。
+        /// </summary>
+        private void MaintainSessionStops()
+        {
+            if (m_sessionStops.Count == 0) return;
+            try
+            {
+                for (int i = m_sessionStops.Count - 1; i >= 0; i--)
+                {
+                    SessionStop rec = m_sessionStops[i];
+                    Entity stop = rec.Stop;
+                    if (!EntityManager.Exists(stop) || EntityManager.HasComponent<Game.Common.Deleted>(stop))
+                    {
+                        m_sessionStops.RemoveAt(i);   // 站台已经没了（玩家拆了 / 退出清理删了）
+                        continue;
+                    }
+
+                    int live = CountLiveWaypoints(stop);
+                    if (live > 0)
+                    {
+                        if (!rec.HadWaypoint)
+                        {
+                            rec.HadWaypoint = true;
+                            m_sessionStops[i] = rec;
+                        }
+                        continue;
+                    }
+                    if (!PlacementDecisions.SessionStopLostWaypoint(rec.HadWaypoint, live))
+                    {
+                        continue;   // 还没连上过：刚落地、线路还没画完，不能当成"被删了"
+                    }
+
+                    // 结构改动前先收干在途 job（本类硬规矩）。
+                    FlushPendingJobs();
+                    if (!DeleteIfSafe(stop))
+                    {
+                        // 还挂着别的活路径点（另一条线在用）→ 不能删。标记为"已失去依附"的
+                        // 状态没必要保留，下一帧 live 仍为 0 会再判一次；这里直接留着观测。
+                        continue;
+                    }
+                    m_sessionStops.RemoveAt(i);
+                    int placedIdx = m_placed.IndexOf(stop);
+                    if (placedIdx >= 0) m_placed.RemoveAt(placedIdx);
+                    BusLineAutoStopsMod.log.Info("[右键撤点] 站台 " + Describe(stop)
+                        + " 的路径点已被删除 → 站台一起删除（本会话剩 " + m_sessionStops.Count + " 枚）");
+                }
+            }
+            catch (Exception e)
+            {
+                BusLineAutoStopsMod.log.Warn("[右键撤点] 检查失败：" + e.GetType().Name + " " + e.Message);
+            }
+        }
+
         /// <summary>还挂着活路径点的站点不删（原版线路在用，删了会把别人的线弄断）。</summary>
         private bool DeleteIfSafe(Entity e)
         {
@@ -3027,6 +3178,7 @@ namespace BusLineAutoStops.Systems
             LazyModeSystem s = Instance;
             if (s == null || s.m_destroyed) return;
             s.m_placed.Clear();
+            s.m_sessionStops.Clear();          // 需求 4（v0.14.0）：新会话不继承上一场的账
             s.m_pending.Clear();
             s.m_dragLandingArmed = false;      // 新会话不继承上一场的补提交
             s.m_prevLineState = ToolLineState.Default;

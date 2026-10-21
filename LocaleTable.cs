@@ -71,24 +71,24 @@ namespace BusLineAutoStops
             Dictionary<string, string> en = Build("en-US");
             var map = new Dictionary<string, string>();
             Put(map, setting.GetSettingsLocaleID(), Get(d, en, "mod.name"));
-            Put(map, setting.GetOptionTabLocaleID(Setting.kTabGeneral), Get(d, en, "tab.general"));
-            Put(map, setting.GetOptionGroupLocaleID(Setting.kGroupMain), Get(d, en, "group.main"));
-            Put(map, setting.GetOptionGroupLocaleID(Setting.kGroupAbout), Get(d, en, "group.about"));
-            Put(map, setting.GetOptionLabelLocaleID(nameof(Setting.AutoPlaceEnabled)), Get(d, en, "master.label"));
-            Put(map, setting.GetOptionDescLocaleID(nameof(Setting.AutoPlaceEnabled)), Get(d, en, "master.desc"));
-            Put(map, setting.GetOptionLabelLocaleID(nameof(Setting.ExitPolicy)), Get(d, en, "policy.label"));
-            Put(map, setting.GetOptionDescLocaleID(nameof(Setting.ExitPolicy)), Get(d, en, "policy.desc"));
+            Put(map, setting.GetOptionTabLocaleID(BusLineAutoStopsSetting.kTabGeneral), Get(d, en, "tab.general"));
+            Put(map, setting.GetOptionGroupLocaleID(BusLineAutoStopsSetting.kGroupMain), Get(d, en, "group.main"));
+            Put(map, setting.GetOptionGroupLocaleID(BusLineAutoStopsSetting.kGroupAbout), Get(d, en, "group.about"));
+            Put(map, setting.GetOptionLabelLocaleID(nameof(BusLineAutoStopsSetting.AutoPlaceEnabled)), Get(d, en, "master.label"));
+            Put(map, setting.GetOptionDescLocaleID(nameof(BusLineAutoStopsSetting.AutoPlaceEnabled)), Get(d, en, "master.desc"));
+            Put(map, setting.GetOptionLabelLocaleID(nameof(BusLineAutoStopsSetting.ExitPolicy)), Get(d, en, "policy.label"));
+            Put(map, setting.GetOptionDescLocaleID(nameof(BusLineAutoStopsSetting.ExitPolicy)), Get(d, en, "policy.desc"));
             // 需求 4（0.9.0）：有轨电车从懒人模式里剥出来单列一条，本版置灰不可选 + 注明暂未上线。
-            Put(map, setting.GetOptionLabelLocaleID(nameof(Setting.TramEnabled)), Get(d, en, "tram.label"));
-            Put(map, setting.GetOptionDescLocaleID(nameof(Setting.TramEnabled)), Get(d, en, "tram.desc"));
-            Put(map, setting.GetOptionLabelLocaleID(nameof(Setting.ToggleLazyBinding)), Get(d, en, "hotkey.toggle"));
-            Put(map, setting.GetOptionDescLocaleID(nameof(Setting.ToggleLazyBinding)), Get(d, en, "hotkey.toggle.desc"));
+            Put(map, setting.GetOptionLabelLocaleID(nameof(BusLineAutoStopsSetting.TramEnabled)), Get(d, en, "tram.label"));
+            Put(map, setting.GetOptionDescLocaleID(nameof(BusLineAutoStopsSetting.TramEnabled)), Get(d, en, "tram.desc"));
+            Put(map, setting.GetOptionLabelLocaleID(nameof(BusLineAutoStopsSetting.ToggleLazyBinding)), Get(d, en, "hotkey.toggle"));
+            Put(map, setting.GetOptionDescLocaleID(nameof(BusLineAutoStopsSetting.ToggleLazyBinding)), Get(d, en, "hotkey.toggle.desc"));
             Put(map, setting.GetBindingMapLocaleID(), Get(d, en, "binding.map"));
-            Put(map, setting.GetOptionLabelLocaleID(nameof(Setting.Version)), Get(d, en, "version.label"));
-            Put(map, setting.GetOptionLabelLocaleID(nameof(Setting.Author)), Get(d, en, "author.label"));
-            Put(map, setting.GetOptionLabelLocaleID(nameof(Setting.OpenKoFi)), Get(d, en, "link.kofi"));
-            Put(map, setting.GetOptionLabelLocaleID(nameof(Setting.OpenForum)), Get(d, en, "link.forum"));
-            Put(map, setting.GetOptionLabelLocaleID(nameof(Setting.OpenRainbow)), Get(d, en, "link.rainbow"));
+            Put(map, setting.GetOptionLabelLocaleID(nameof(BusLineAutoStopsSetting.Version)), Get(d, en, "version.label"));
+            Put(map, setting.GetOptionLabelLocaleID(nameof(BusLineAutoStopsSetting.Author)), Get(d, en, "author.label"));
+            Put(map, setting.GetOptionLabelLocaleID(nameof(BusLineAutoStopsSetting.OpenKoFi)), Get(d, en, "link.kofi"));
+            Put(map, setting.GetOptionLabelLocaleID(nameof(BusLineAutoStopsSetting.OpenForum)), Get(d, en, "link.forum"));
+            Put(map, setting.GetOptionLabelLocaleID(nameof(BusLineAutoStopsSetting.OpenRainbow)), Get(d, en, "link.rainbow"));
 
             // 枚举下拉成员：框架 key + 手写模板双注册（BLG 的 EnumKey 模板要的是后者）
             // 需求 5（v0.6.0）：只有两项 —— 保留公交站 / 不保留公交站。
@@ -102,7 +102,7 @@ namespace BusLineAutoStops
         private static void PutEnum(Dictionary<string, string> map, ModSetting setting, ExitDeletePolicy p, string value)
         {
             Put(map, setting.GetEnumValueLocaleID(p), value);
-            Put(map, Setting.ExitPolicyEnumKey(p), value);
+            Put(map, BusLineAutoStopsSetting.ExitPolicyEnumKey(p), value);
         }
 
         private static void Put(Dictionary<string, string> map, string key, string value)
@@ -191,7 +191,7 @@ namespace BusLineAutoStops
                 { "master.label", "Enable the mod" },
                 { "master.desc", "This is the mod itself, not lazy mode. Off: the top-left icon disappears and the game behaves exactly as it would without the mod. On: the icon appears and you can switch lazy mode on and off with it or with your hotkey. The hotkey never turns the mod on - it only toggles lazy mode, and only while the mod is enabled." },
                 { "policy.label", "When lazy mode ends" },
-                { "policy.desc", "Only covers bus stops this mod placed automatically during this session; a stop that a line's waypoints already use is always kept. Cancelling an unfinished line is vanilla behaviour - the game drops those waypoints itself and this mod does not get involved." },
+                { "policy.desc", "Only covers bus stops this mod placed automatically during this session; a stop that a line's waypoints already use is always kept. Cancelling an unfinished line is vanilla behaviour - the game drops those waypoints itself and this mod does not get involved.\n\nNote: while editing an existing line, bus stops this mod placed automatically in that lazy session are deleted together with the waypoint you remove with the right mouse button. Once you leave lazy mode they can no longer be deleted together — this rule is not affected by this option." },
                 { "tram.label", "Tram stops (not available yet)" },
                 { "tram.desc", "Tram stops follow different placement rules than bus stops (a tram line can only be drawn from tram stop to tram stop), so this part is not finished yet. The option stays here, greyed out, and a later update unlocks it." },
                 { "warn.tramNotOnline", "Tram stops are not available in this version - lazy mode works on bus lines only." },
@@ -224,7 +224,7 @@ namespace BusLineAutoStops
                 { "master.label", "启用模组" },
                 { "master.desc", "这一条是模组本体的开关，不是懒人模式。关闭：左上角图标不出现，游戏完全恢复原版行为；开启：图标出现在左上角，之后可以用图标或快捷键进入、退出懒人模式。快捷键只切换懒人模式，永远不会把模组打开。" },
                 { "policy.label", "退出懒人模式时" },
-                { "policy.desc", "只管本次会话里由模组自动落地的公交站；已经被线路路径点用上的站点永远保留。线路没画完就取消是原版行为 —— 路径点由游戏自己丢弃，本模组不参与、也不对抗。" },
+                { "policy.desc", "只管本次会话里由模组自动落地的公交站；已经被线路路径点用上的站点永远保留。线路没画完就取消是原版行为 —— 路径点由游戏自己丢弃，本模组不参与、也不对抗。\n\n注意，在修改已有线路时，该次懒人模式下自动放置的公交站，会随右键删除路径点而被删除。当然退出懒人模式后就不再能被一起删除了，这个规则不受本选项改变。" },
                 { "tram.label", "有轨电车站自动放置（暂未上线）" },
                 { "tram.desc", "有轨电车站的落点规则和公交站不一样（电车线路只能从电车站连到电车站），这部分本版还没做完。条目先保留并置灰，后续版本开放。" },
                 { "warn.tramNotOnline", "有轨电车站暂未上线，懒人模式只处理公交线路。" },
@@ -257,7 +257,7 @@ namespace BusLineAutoStops
                 { "master.label", "啟用模組" },
                 { "master.desc", "這一條是模組本體的開關，不是懶人模式。關閉：左上角圖示不出現，遊戲完全恢復原版行為；開啟：圖示出現在左上角，之後可以用圖示或快速鍵進入、退出懶人模式。快速鍵只切換懶人模式，永遠不會把模組打開。" },
                 { "policy.label", "退出懶人模式時" },
-                { "policy.desc", "只處理本次會話裡由模組自動落地的公車站；已被路線路徑點使用的站點永遠保留。路線沒畫完就取消是原版行為 —— 路徑點由遊戲自行捨棄，本模組不干預、也不對抗。" },
+                { "policy.desc", "只處理本次會話裡由模組自動落地的公車站；已被路線路徑點使用的站點永遠保留。路線沒畫完就取消是原版行為 —— 路徑點由遊戲自行捨棄，本模組不干預、也不對抗。\n\n注意，在修改既有路線時，該次懶人模式下自動放置的公車站，會隨右鍵刪除路徑點而被刪除。當然退出懶人模式後就不再能被一起刪除了，這個規則不受本選項改變。" },
                 { "tram.label", "電車站自動放置（暫未上線）" },
                 { "tram.desc", "電車站的落點規則與公車站不同（電車路線只能從電車站連到電車站），這個版本還沒完成。條目先保留並置灰，後續版本開放。" },
                 { "warn.tramNotOnline", "電車站暫未上線，懶人模式只處理公交路線。" },
@@ -290,7 +290,7 @@ namespace BusLineAutoStops
                 { "master.label", "Mod aktivieren" },
                 { "master.desc", "Das ist der Mod selbst, nicht der Komfortmodus. Aus: Das Symbol oben links verschwindet und das Spiel verhält sich genau wie ohne den Mod. An: Das Symbol erscheint, und du schaltest den Komfortmodus damit oder per Tastenkürzel ein und aus. Das Tastenkürzel schaltet den Mod nie ein - es schaltet nur den Komfortmodus um, und nur solange der Mod aktiv ist." },
                 { "policy.label", "Beim Beenden des Komfortmodus" },
-                { "policy.desc", "Betrifft nur Bushaltestellen, die dieser Mod in dieser Sitzung automatisch gesetzt hat; eine Haltestelle, die Wegpunkte einer Linie schon nutzen, bleibt immer erhalten. Eine unvollständige Linie abzubrechen ist Originalverhalten – das Spiel verwirft die Wegpunkte selbst, der Mod mischt sich nicht ein." },
+                { "policy.desc", "Betrifft nur Bushaltestellen, die dieser Mod in dieser Sitzung automatisch gesetzt hat; eine Haltestelle, die Wegpunkte einer Linie schon nutzen, bleibt immer erhalten. Eine unvollständige Linie abzubrechen ist Originalverhalten – das Spiel verwirft die Wegpunkte selbst, der Mod mischt sich nicht ein.\n\nHinweis: Beim Bearbeiten einer bestehenden Linie werden Bushaltestellen, die dieser Mod in dieser Lazy-Sitzung automatisch gesetzt hat, zusammen mit dem per Rechtsklick entfernten Wegpunkt gelöscht. Nach dem Verlassen des Lazy-Modus lassen sie sich nicht mehr mitlöschen – diese Regel ist von dieser Option unabhängig." },
                 { "tram.label", "Straßenbahnhaltestellen (noch nicht verfügbar)" },
                 { "tram.desc", "Straßenbahnhaltestellen folgen anderen Platzierungsregeln als Bushaltestellen (eine Straßenbahnlinie wird von Haltestelle zu Haltestelle gezeichnet). Dieser Teil ist noch nicht fertig; der Punkt bleibt hier grau reserviert und wird später freigeschaltet." },
                 { "warn.tramNotOnline", "Straßenbahnhaltestellen sind noch nicht verfügbar – der Komfortmodus arbeitet nur mit Buslinien." },
@@ -323,7 +323,7 @@ namespace BusLineAutoStops
                 { "master.label", "Activar el mod" },
                 { "master.desc", "Esto es el mod en sí, no el modo fácil. Desactivado: el icono de arriba a la izquierda desaparece y el juego se comporta exactamente como sin el mod. Activado: el icono aparece y puedes activar y desactivar el modo fácil con él o con tu tecla rápida. La tecla rápida nunca activa el mod: solo alterna el modo fácil, y solo mientras el mod está activado." },
                 { "policy.label", "Al salir del modo fácil" },
-                { "policy.desc", "Solo afecta a las paradas de autobús que este mod colocó automáticamente en esta sesión; una parada que los puntos de una línea ya usan se conserva siempre. Cancelar una línea sin terminar es comportamiento original: el juego descarta sus puntos y este mod no interviene." },
+                { "policy.desc", "Solo afecta a las paradas de autobús que este mod colocó automáticamente en esta sesión; una parada que los puntos de una línea ya usan se conserva siempre. Cancelar una línea sin terminar es comportamiento original: el juego descarta sus puntos y este mod no interviene.\n\nNota: al editar una línea existente, las paradas que este mod colocó automáticamente en esa sesión perezosa se eliminan junto con el punto que quites con el botón derecho. Al salir del modo perezoso ya no se pueden eliminar así; esta regla no depende de esta opción." },
                 { "tram.label", "Paradas de tranvía (aún no disponibles)" },
                 { "tram.desc", "Las paradas de tranvía siguen reglas distintas a las de autobús (una línea de tranvía se traza de parada en parada). Esta parte aún no está terminada; la opción queda aquí bloqueada y se activará en una actualización futura." },
                 { "warn.tramNotOnline", "Las paradas de tranvía aún no están disponibles: el modo fácil solo funciona con líneas de autobús." },
@@ -356,7 +356,7 @@ namespace BusLineAutoStops
                 { "master.label", "Activer le mod" },
                 { "master.desc", "Ceci est le mod lui-même, pas le mode facile. Désactivé : l'icône en haut à gauche disparaît et le jeu se comporte exactement comme sans le mod. Activé : l'icône apparaît et vous activez ou désactivez le mode facile avec elle ou avec votre raccourci. Le raccourci n'active jamais le mod : il ne bascule que le mode facile, et seulement tant que le mod est activé." },
                 { "policy.label", "À la sortie du mode facile" },
-                { "policy.desc", "Ne concerne que les arrêts de bus posés automatiquement par ce mod pendant cette session ; un arrêt déjà utilisé par un point de passage d'une ligne est toujours conservé. Annuler une ligne inachevée est le comportement du jeu : il supprime ses points de passage et le mod ne s'en mêle pas." },
+                { "policy.desc", "Ne concerne que les arrêts de bus posés automatiquement par ce mod pendant cette session ; un arrêt déjà utilisé par un point de passage d'une ligne est toujours conservé. Annuler une ligne inachevée est le comportement du jeu : il supprime ses points de passage et le mod ne s'en mêle pas.\n\nRemarque : lors de la modification d'une ligne existante, les arrêts que ce mod a posés automatiquement pendant cette session paresseuse sont supprimés avec le point de passage retiré par clic droit. Après avoir quitté le mode paresseux, ils ne peuvent plus être supprimés ainsi ; cette règle ne dépend pas de cette option." },
                 { "tram.label", "Arrêts de tram (pas encore disponibles)" },
                 { "tram.desc", "Les arrêts de tramway ne suivent pas les mêmes règles que les arrêts de bus (une ligne de tram se trace d'arrêt en arrêt). Cette partie n'est pas terminée : l'option reste ici, grisée, et une mise à jour future l'ouvrira." },
                 { "warn.tramNotOnline", "Les arrêts de tram ne sont pas encore disponibles : le mode facile ne gère que les lignes de bus." },
@@ -389,7 +389,7 @@ namespace BusLineAutoStops
                 { "master.label", "Attiva la mod" },
                 { "master.desc", "Questo è il mod stesso, non la modalità facile. Spento: l'icona in alto a sinistra scompare e il gioco si comporta esattamente come senza il mod. Acceso: l'icona compare e puoi attivare e disattivare la modalità facile con essa o con la scorciatoia. La scorciatoia non accende mai il mod: cambia solo la modalità facile, e solo finché il mod è attivo." },
                 { "policy.label", "All'uscita dalla modalità facile" },
-                { "policy.desc", "Riguarda solo le fermate dell'autobus posate automaticamente da questo mod in questa sessione; una fermata già usata da una tappa di una linea resta sempre. Annullare una linea non completata è il comportamento del gioco: le tappe le scarta il gioco e il mod non interviene." },
+                { "policy.desc", "Riguarda solo le fermate dell'autobus posate automaticamente da questo mod in questa sessione; una fermata già usata da una tappa di una linea resta sempre. Annullare una linea non completata è il comportamento del gioco: le tappe le scarta il gioco e il mod non interviene.\n\nNota: quando modifichi una linea esistente, le fermate posate automaticamente da questo mod in quella sessione pigra vengono eliminate insieme alla tappa che rimuovi con il tasto destro. Dopo essere uscito dalla modalità pigra non è più possibile eliminarle così; questa regola non dipende da questa opzione." },
                 { "tram.label", "Fermate dei tram (non ancora disponibili)" },
                 { "tram.desc", "Le fermate del tram seguono regole diverse da quelle degli autobus (una linea del tram si disegna da fermata a fermata). Questa parte non è ancora pronta: la voce resta qui, disattivata, e un aggiornamento futuro la sbloccherà." },
                 { "warn.tramNotOnline", "Le fermate dei tram non sono ancora disponibili: la modalità facile gestisce solo le linee degli autobus." },
@@ -422,7 +422,7 @@ namespace BusLineAutoStops
                 { "master.label", "MODを有効化" },
                 { "master.desc", "これは MOD 本体のスイッチで、かんたんモードではありません。オフ：左上のアイコンが消え、ゲームは MOD なしとまったく同じ動作になります。オン：アイコンが表示され、アイコンまたはホットキーでかんたんモードを出入りできます。ホットキーが MOD をオンにすることはありません。かんたんモードの切り替えだけを行い、それも MOD が有効なときだけです。" },
                 { "policy.label", "かんたんモードを終えるとき" },
-                { "policy.desc", "対象は、このセッションで MOD が自動設置したバス停だけ。路線の通過地点がすでに使っている停留所は常に残します。未完成の路線をキャンセルするのは原版の挙動で、通過地点はゲーム側が消すため、この MOD は干渉しません。" },
+                { "policy.desc", "対象は、このセッションで MOD が自動設置したバス停だけ。路線の通過地点がすでに使っている停留所は常に残します。未完成の路線をキャンセルするのは原版の挙動で、通過地点はゲーム側が消すため、この MOD は干渉しません。\n\n注意：既存の路線を編集しているとき、そのおまかせモード中にこの MOD が自動設置したバス停は、右クリックで削除した通過地点と一緒に削除されます。おまかせモードを終了すると一緒に削除できなくなります。この規則はこのオプションの影響を受けません。" },
                 { "tram.label", "路面電車停留所の自動設置（未実装）" },
                 { "tram.desc", "路面電車の停留所はバス停と異なる配置ルール（停留所から停留所へ路線を引く）のため、この部分はまだ未完成です。項目はグレーのまま予約し、今後のアップデートで開放します。" },
                 { "warn.tramNotOnline", "路面電車停留所は未実装です。かんたんモードはバス路線のみ対応。" },
@@ -455,7 +455,7 @@ namespace BusLineAutoStops
                 { "master.label", "모드 사용" },
                 { "master.desc", "이 항목은 모드 자체의 스위치이며 간편 모드가 아닙니다. 끄면 왼쪽 위 아이콘이 사라지고 게임은 모드가 없을 때와 똑같이 동작합니다. 켜면 아이콘이 나타나고, 아이콘이나 단축키로 간편 모드를 켜고 끌 수 있습니다. 단축키는 모드를 켜지 않습니다. 간편 모드만 전환하며, 그것도 모드가 켜져 있을 때만입니다." },
                 { "policy.label", "간편 모드를 끝낼 때" },
-                { "policy.desc", "이번 세션에서 모드가 자동 배치한 버스 정류장만 대상입니다. 노선의 웨이포인트가 이미 사용 중인 정류장은 항상 유지됩니다. 노선을 완성하지 않고 취소하는 것은 원본 동작이며, 웨이포인트는 게임이 스스로 지우므로 이 모드가 관여하지 않습니다." },
+                { "policy.desc", "이번 세션에서 모드가 자동 배치한 버스 정류장만 대상입니다. 노선의 웨이포인트가 이미 사용 중인 정류장은 항상 유지됩니다. 노선을 완성하지 않고 취소하는 것은 원본 동작이며, 웨이포인트는 게임이 스스로 지우므로 이 모드가 관여하지 않습니다.\n\n참고: 기존 노선을 수정할 때, 해당 편의 모드에서 이 모드가 자동 배치한 정류장은 마우스 오른쪽 버튼으로 삭제한 웨이포인트와 함께 삭제됩니다. 편의 모드를 종료하면 더 이상 함께 삭제되지 않으며, 이 규칙은 이 옵션과 무관합니다." },
                 { "tram.label", "전차 정류장 자동 배치(미출시)" },
                 { "tram.desc", "전차 정류장은 버스 정류장과 배치 규칙이 다릅니다(전차 노선은 정류장에서 정류장으로만 그릴 수 있음). 이 부분은 아직 완성되지 않았으니 항목은 비활성으로 예약하고 추후 업데이트에서 개방합니다." },
                 { "warn.tramNotOnline", "전차 정류장은 아직 출시되지 않았습니다. 간편 모드는 버스 노선만 처리합니다." },
@@ -488,7 +488,7 @@ namespace BusLineAutoStops
                 { "master.label", "Włącz mod" },
                 { "master.desc", "To jest sam mod, nie tryb łatwy. Wyłączony: ikona w lewym górnym rogu znika, a gra działa dokładnie tak, jak bez moda. Włączony: ikona się pojawia, a tryb łatwy włączasz i wyłączasz nią lub skrótem klawiszowym. Skrót nigdy nie włącza moda — przełącza tylko tryb łatwy i tylko wtedy, gdy mod jest włączony." },
                 { "policy.label", "Przy wyjściu z trybu łatwego" },
-                { "policy.desc", "Dotyczy wyłącznie przystanków autobusowych postawionych automatycznie przez ten mod w tej sesji; przystanek, którego używa już węzeł trasy, jest zawsze zachowywany. Anulowanie nieukończonej trasy to zachowanie gry: węzły trasy usuwa gra, a mod w to nie wchodzi." },
+                { "policy.desc", "Dotyczy wyłącznie przystanków autobusowych postawionych automatycznie przez ten mod w tej sesji; przystanek, którego używa już węzeł trasy, jest zawsze zachowywany. Anulowanie nieukończonej trasy to zachowanie gry: węzły trasy usuwa gra, a mod w to nie wchodzi.\n\nUwaga: podczas edycji istniejącej trasy przystanki postawione automatycznie przez ten mod w tej sesji są usuwane razem z węzłem trasy skasowanym prawym przyciskiem. Po wyjściu z trybu ułatwień nie można ich już tak usunąć – ta zasada nie zależy od tej opcji." },
                 { "tram.label", "Przystanki tramwajowe (jeszcze niedostępne)" },
                 { "tram.desc", "Przystanki tramwajowe mają inne zasady stawiania niż autobusowe (linię tramwajową rysuje się od przystanku do przystanku). Ta część nie jest jeszcze gotowa — opcja pozostaje tu, szara, i odblokuje ją późniejsza aktualizacja." },
                 { "warn.tramNotOnline", "Przystanki tramwajowe nie są jeszcze dostępne — tryb łatwy działa tylko z liniami autobusowymi." },
@@ -521,7 +521,7 @@ namespace BusLineAutoStops
                 { "master.label", "Ativar o mod" },
                 { "master.desc", "Isto é o próprio mod, não o modo fácil. Desligado: o ícone no canto superior esquerdo desaparece e o jogo comporta-se exatamente como sem o mod. Ligado: o ícone aparece e você liga e desliga o modo fácil com ele ou com o atalho. O atalho nunca liga o mod: só alterna o modo fácil, e apenas enquanto o mod está ligado." },
                 { "policy.label", "Ao sair do modo fácil" },
-                { "policy.desc", "Só afeta os pontos de ônibus colocados automaticamente por este mod nesta sessão; um ponto já usado por um ponto de passagem de uma linha é sempre mantido. Cancelar uma linha não concluída é comportamento do jogo: ele descarta os pontos de passagem e este mod não interfere." },
+                { "policy.desc", "Só afeta os pontos de ônibus colocados automaticamente por este mod nesta sessão; um ponto já usado por um ponto de passagem de uma linha é sempre mantido. Cancelar uma linha não concluída é comportamento do jogo: ele descarta os pontos de passagem e este mod não interfere.\n\nObservação: ao editar uma linha existente, os pontos colocados automaticamente por este mod nessa sessão são excluídos junto com o ponto de passagem removido com o botão direito. Depois de sair do modo eles não podem mais ser excluídos assim; esta regra não depende desta opção." },
                 { "tram.label", "Pontos de bonde (ainda indisponíveis)" },
                 { "tram.desc", "Pontos de bonde têm regras de posicionamento diferentes dos pontos de ônibus (a linha de bonde é traçada de ponto em ponto). Esta parte ainda não está pronta; a opção fica aqui bloqueada e uma atualização futura a liberará." },
                 { "warn.tramNotOnline", "Pontos de bonde ainda não estão disponíveis: o modo fácil só funciona com linhas de ônibus." },
@@ -554,7 +554,7 @@ namespace BusLineAutoStops
                 { "master.label", "Включить мод" },
                 { "master.desc", "Это сам мод, а не простой режим. Выключено: значок в левом верхнем углу исчезает, и игра ведёт себя точно так же, как без мода. Включено: значок появляется, и вы включаете и выключаете простой режим им или горячей клавишей. Горячая клавиша никогда не включает мод — она переключает только простой режим, и только пока мод включён." },
                 { "policy.label", "При выходе из простого режима" },
-                { "policy.desc", "Касается только остановок, которые мод автоматически поставил в этой сессии; остановку, которую уже использует точка маршрута, мод никогда не удаляет. Отмена незавершенного маршрута — это поведение игры: точки маршрута удаляет сама игра, и мод в это не вмешивается." },
+                { "policy.desc", "Касается только остановок, которые мод автоматически поставил в этой сессии; остановку, которую уже использует точка маршрута, мод никогда не удаляет. Отмена незавершенного маршрута — это поведение игры: точки маршрута удаляет сама игра, и мод в это не вмешивается.\n\nПримечание: при изменении существующего маршрута остановки, автоматически поставленные модом в этой сессии, удаляются вместе с точкой маршрута, убранной правой кнопкой. После выхода из режима они больше не удаляются вместе с ней — это правило не зависит от данной настройки." },
                 { "tram.label", "Трамвайные остановки (ещё недоступны)" },
                 { "tram.desc", "У трамвайных остановок другие правила размещения, чем у автобусных (линию трамвая проводят от остановки к остановке). Эта часть ещё не готова — пункт остаётся здесь неактивным, его откроет будущее обновление." },
                 { "warn.tramNotOnline", "Трамвайные остановки ещё недоступны — простой режим работает только с автобусными линиями." },

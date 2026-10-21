@@ -56,7 +56,7 @@ namespace BusLineAutoStops
         /// 分类能力（IsLazyModeSupported）不动：资产识别、面板过滤、站台查重都还要认得电车站，
         /// 这里只管"能不能拿它跑懒人模式"。电车本版关掉的原因是它的落点规则和公交不是一套
         /// （电车线路只能从电车站连到电车站，悬停点给的是线路/车站实体，按道路吸附那套走不通），
-        /// 细节见 Setting.TramEnabled 的注释。
+        /// 细节见 BusLineAutoStopsSetting.TramEnabled 的注释。
         /// </summary>
         public static bool IsLazyModeEnabled(TransportKind kind, bool tramEnabled)
         {
@@ -99,7 +99,7 @@ namespace BusLineAutoStops
         /// （想接着拿这些站台连线）。这个默认值只有在**本次会话里真的由模组放过站**时才有意义。
         ///
         /// 单独抽成纯函数是为了让离线 T3 能断言"默认值就是删除"，避免默认值散落在
-        /// Setting.SetDefaults / LazyModeState 字段初始化 / ResetForNewWorld 三处各写一遍而漂掉。
+        /// BusLineAutoStopsSetting.SetDefaults / LazyModeState 字段初始化 / ResetForNewWorld 三处各写一遍而漂掉。
         /// </summary>
         public static ExitDeletePolicy DefaultExitPolicy()
         {

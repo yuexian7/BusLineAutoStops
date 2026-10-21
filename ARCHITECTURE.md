@@ -1,9 +1,10 @@
-# BusLine AutoStops 架构速览（v0.13.0）
+# BusLine AutoStops 架构速览（v0.14.0）
 
 给下一个接手者的最小集：现行机制、硬不变量、构建命令、待办。
 逐版迭代史与机制取证（96 条校正、每版实机日志）在 `docs/history/开发笔记-v0.1.1~v0.11.1.md`（已冻结，只查不改）。
-当前版本状态：**v0.13.0 已本地部署、离线门禁全绿、已上传线上（versionId=14，0.13.0，仍 Private）**：ModId 160528 / 线上从 0.11.2 直接到 0.13.0 / dll 102400B / 线上包 59078B。
-0.13.0 修玩家三条反馈：拖拽前不再模拟出公交站、拖拽落地的路径点依附到新站台、光标进入既有站台依附范围时不模拟（交原版直接依附）。
+当前版本状态：**v0.14.0 已本地部署、离线门禁全绿（188 条钉子 + 96 条 T3）、已上传线上（versionId=15，0.14.0，仍 Private）**：ModId 160528 / dll 110080B / 线上包 61759B。
+0.14.0 修玩家五条反馈：拖拽中要有预览、关总开关图标不消失、退出策略下拉框每次重启回默认、右键删路径点要连站台一起删、关掉后必须零影响。
+其中"设置每次重启回默认"是真的落盘寻址 bug（见下），与 UI 渲染无关；拖拽预览则是 0.13.0 拦过头了。
 **0.12.0 / 0.12.1 只在本机验证过、从未上传**（线上一直停在 0.11.2），它们的内容（拖拽放站、松手帧闪退修复、总开关与快捷键联动、退出策略默认不保留）合并进 0.13.0 一起上线。
 
 ## 机制一页纸：懒人模式状态机
@@ -15,6 +16,8 @@
 3. **认领**：喂出后逐帧追、最多 10 帧（`kClaimMaxFrames`）把幽灵认领回来，登记成"**世上只留一枚幽灵**"——它活着就一帧不再喂，被原版 Clear 收走了才补喂；认领那一刻按吸附后的实际落位查重（已有同类站台则不放置，原版会依附到它）。
 4. **转正**：玩家**左键**点击，applyMode 由原版应用（模组只读不写），站台转正为真实建筑；线路完成时停靠点自动连到站台、公交进站。转正/依附均由原版管线完成。
 5. **撤点回退**：右键撤停靠点 → 同时撤掉该点由本模组建的站台（先撤点后删站，四条防御）；线路完成 → 站台全部保留。退出策略：保留 / 不保留本次会话落地的站台（仍被线路引用的永不误删）。
+   v0.14.0 起再加一条（与退出策略无关）：本会话自动放置的站台，**路径点被右键删光时跟着删**；
+   判据是站台自己的 `ConnectedRoute`（原版删点时会把那一枚 `RemoveValue` 掉），账在退出懒人模式时清空。
 
 ## 四条硬不变量（违反即闪退/毁世界，取证都在笔记 #63/#88/#89/#90）
 
@@ -24,6 +27,72 @@
 | 88 | `RouteToolSystem.GetControlPoints` 返回的是**工具自己的持久缓冲**（NativeList 视图）→ **共用缓冲绝不 Dispose**；撤点只能 `state==Create` 时从 `Length-2` 往前 `RemoveAt`，且守住四条防御（不动悬停位 / 遇非本会话依附就停 / 剩 3 点收手） | `Cancel()` 是私有的，别的系统（GuideLinesSystem）也是直接拿这份缓冲进 job |
 | 89 | **`Temp.m_Original == Entity.Null` 才是本模组造的幽灵**，`!= Null` 是原版的复制/选中副本（原件正被 `Hidden` 藏着）→ 判己防误删，删副本 = 玩家看到"站台消失" | 副本要等 `SubObjectHiddenSystem` 确认没有活 Temp 指回原件才解除隐藏 |
 | 90 | **落点定侧只由喂点的有符号横向偏移决定**（喂点用射线真实命中点，不用控制点位置） | `SnapRouteLane` 用 `dot(MathUtils.Right(切向), 喂点-曲线点)` 选车道，`SnapSegmentAreas` 再用它选可建造区；喂错点 = 落到对面人行道 |
+
+## v0.14.0 本轮修订（2026-10-21/22，玩家五条反馈）
+
+玩家原话：①"拖拽前不要模拟放置公交站，但是开始拖拽后（鼠标左键一直按着了）还是要出现预览的啊"；②"关闭总开关，左上角的图标按钮不会消失"；③"退出懒人模式是否保留公交站的下拉框每次重启游戏都会变成默认设置"；④"在修改已有线路时，该次懒人模式下自动放置的公交站，会随右键删除路径点而被删除……退出懒人模式后就不再能被一起删除了，这个规则不受本选项改变"；⑤"关闭总开关或卸载模组后对存档完全没影响，必须能完全恢复原版行为。性能、帧数都不要有影响"。
+
+### 1) 拖拽中必须预览（0.13.0 拦过头）
+
+0.13.0 的 `SuppressPreview` 把 `Modify` 也拦了。查原版：`State.Modify` **只可能**从
+`Apply()` 的 Default 分支进入，而那条分支头上的 `GetAllowApply()`（`research/ToolBaseSystem.cs:541-543`）
+就要求"这一帧左键按下了" —— 所以 **Modify 态 == 左键按住、正在拖拽**，正是玩家要预览的状态。
+现在闸门是三档：`Remove`（左键在确认删除）／`Default` 压在既有路径点上（**按下之前**）／
+既有站台依附范围内（交原版直接依附）；`Modify` 明确放行。
+
+顺带补上 0.13.0 没暴露的一个组合：放行拖拽后，"松手帧手上还攥着一枚幽灵、同帧又在喂新定义"真的会发生，
+而 `ApplyObjectsSystem.Create()` 对 `Temp`（`m_Original == Null`）是**不过校验、不计费**直接转正的（笔记 #71）。
+所以加 `bool previewOkNow = previewOk && phase != kPhaseApply;`：Apply 帧只关闸、不喂、不收。
+
+### 2) + 3) 设置每次重启回默认 —— 落盘寻址的两个真 bug（不是 UI）
+
+- **类名冲突**：`Setting.ApplyAndSave()`（`research/decompiled/Game.Settings/Setting.cs:151-155`）写的是
+  `SaveSpecificSetting(GetType().Name)`，而 `AssetDatabase.SaveSpecificSetting → GetTargetSetting`
+  （`/tmp/ad.cs:820-840`）**只按 `fragment.source.GetType().Name` 找目标**，命中第一个就 `break`。
+  本类原来就叫 `Setting`，本机同时装着 `AccessAnarchy.Setting`（`ilspycmd -l c AccessAnarchy.dll` 实测），
+  两个 `GetType().Name` 都是 `"Setting"` → 我们的保存请求可能整个落到别人的 `.coc` 上
+  （随后 `GetSettingsInSameFile` 只写那一个文件里的片段），自己的值一次都写不进去。
+  **实机取证**：玩家 2026-10-21 23:04 连按四次总开关，`FallbackSettings.coc` 的 mtime 仍停在
+  2026-10-20 05:15 —— 一行都没写进去。
+  → 类改成 `BusLineAutoStopsSetting`。`id` 不受影响（`ModSetting.id` 用的是 **Mod 类**），
+  `.coc` 片段名不受影响（那是 `LoadSettings(nameof(BusLineAutoStops), …)` 传的字符串）；
+  只有 `name` 变了，而它只进 `Options.OPTION[...]` / `OPTION_DESCRIPTION[...]` 两条 key，
+  LocaleTable 一直用 `setting.GetOptionLabelLocaleID(...)` 现算，两边同步。
+- **公共文件**：没有 `[FileLocation]` 时框架把片段塞进 `FallbackSettings.coc`（`LoadSettings` 里
+  `assetName` 的兜底值），与几十个模组共用一个文件 —— 别人任何一次保存都会整份重写。
+  → 加 `[FileLocation("BusLineAutoStops")]`。老玩家已存在的片段仍留在 FallbackSettings.coc，
+  `LoadSettings` 是按**片段名**找的，读得到、不会丢。
+- 顺带：`SetDefaults()` 以前除了写字段还顺手写了四条 `LazyModeState.*`，与 `SyncToState()` 两处各写一遍；
+  现在 `SetDefaults()` 只决定字段，搬到运行时状态**只有 `SyncToState()` 一条路**。
+  总开关补 `[SettingsUIForceSave]`（关掉的状态必须写得下去）。
+- 分诊：启动时 `[设置] 载入后 启用模组=… 退出策略=… 键位=… 文件=…` 一行；
+  前端控制台每次总开关变化 `master on/off → 显示图标/隐藏图标` 一行。
+  0.13.0 的日志只在 `enabled` 变化时打，master 的变化完全看不见 —— 这条反馈当时无法分诊。
+
+### 4) 右键删路径点 → 本会话自动放置的站台跟着删（新规则）
+
+不抓右键事件，也不碰原版输入：判据用**站台自己的 `ConnectedRoute` 缓冲**。
+原版删路径点走 `State.Remove` → `ApplyRoutesSystem` 删实体 → `WaypointConnectionSystem` 的
+Deleted 分支把那一枚从站台的缓冲里 `RemoveValue` 掉 —— 也就是"曾经连着、现在一枚活的都不剩"
+本身就是原版留下的证据。
+
+- 新增会话账 `m_sessionStops`（`{Stop, HadWaypoint}`）：点击落地与拖拽落地**都记**
+  （`m_placed` 是撤销栈，按 v0.12.0 约定不收拖拽那一笔，两者生命周期不同）。
+- 判据 `PlacementDecisions.SessionStopLostWaypoint(hadWaypoint, liveWaypoints)`：
+  `hadWaypoint && liveWaypoints <= 0`。`hadWaypoint` 防"刚落地、线路还没画完"被误判。
+- `MaintainSessionStops()`：账空即早退；站台没了就出账；`live > 0` 记 `HadWaypoint`；
+  判定成立时 `FlushPendingJobs()` → `DeleteIfSafe`（还挂着别的活路径点就**不删**）→ 出账 + 从 `m_placed` 摘掉。
+  **非 Apply 帧**才跑（`if (phase != kPhaseApply) MaintainSessionStops();`），同帧互斥结构改动=空托管栈崩溃。
+- 清账时机就是需求边界：`RunExitCleanup`（退出懒人模式）与 `BeginSession`（新会话）。
+  清掉之后这些站台**彻底放置好**，再进懒人模式也删不到；账里只有我们自己的实体，玩家手摆的永远不碰。
+- 设置页说明（12 语言）补上这句规则，并要求"不受保留/删除选项改变"。
+
+### 5) 关掉 / 卸载后零影响
+
+- `LazyModeSystem.OnUpdate` 第一行（`Broken` 之后）：`!Enabled && !PendingExitCleanup && !m_beginCleanupPending → return`。
+  稳态下三个 bool 读 + 返回；两条收尾队列（关总开关排的退出清理、进会话排的残留回收）不被跳过。
+- 仍然是**零 Harmony、零自定义组件类型**：对路径点写的 `Connected`/`VehicleTiming`/`Updated` 与站台
+  `ConnectedRoute` 全是原版类型、原版语义（原版自己也这么写），卸载后存档就是一份正常存档。
 
 ## v0.13.0 本轮修订（2026-10-21，玩家三条反馈）
 
@@ -149,7 +218,7 @@ Player.log 收尾是 `Native Crash Reporting / Got a UNKNOWN while executing nat
 ```powershell
 node scripts/compile-check.js        # 只做 C# 编译检查，不部署不跑 webpack
 node scripts/deploy-local.js         # Roslyn 直编 DLL → 铺完整产物到本机 Mods\BusLineAutoStops\
-node scripts/pack-release.js <版本>   # 打包 releases/<版本>/（DLL+mjs+mod.json+images）并自检，发布打包的事实标准（本版 144 枚钉子）
+node scripts/pack-release.js <版本>   # 打包 releases/<版本>/（DLL+mjs+mod.json+images）并自检，发布打包的事实标准（本版 188 枚钉子）
 ```
 
 官方工具链 `dotnet build` 已修复可用（0 警告 0 错误；csproj 已补 `Colossal.UI.Binding` 引用、删死 Harmony 配置、`math.isfinite` 替代 net48 没有的 `float.IsFinite`），适合 IDE/编译校验；**发布打包仍以 `scripts/pack-release.js` 为准**。
@@ -158,7 +227,7 @@ node scripts/pack-release.js <版本>   # 打包 releases/<版本>/（DLL+mjs+mo
 离线门禁：
 
 ```powershell
-node scripts/verify.cjs                 # 版本四处一致 + T3 纯逻辑 42 断言
+node scripts/verify.cjs                 # 版本四处一致 + T3 纯逻辑 96 断言
 node scripts/verify.cjs --deployed      # 再加部署完整性 15 项（实机前、上传前必跑）
 node scripts/build-frontend.js          # 前端构建（deploy-local 默认已强制重跑 webpack）
 node scripts/set-store-copy.js          # 写面向玩家的 4 个字段 + mod.json 版本（改版本后跑）
@@ -203,6 +272,20 @@ MSYS_NO_PATHCONV=1 DOTNET_ROLL_FORWARD=Major dotnet "<游戏>\Cities2_Data\Conte
 
 ## 验证台账
 
+**已验证（离线，2026-10-22 v0.14.0）**
+
+- `node scripts/compile-check.js` 0 错误（13 源文件 → 110080B）。
+- `node scripts/pack-release.js 0.14.0` 全绿：**188 枚钉子**（本版新增十四枚：拖拽预览+Apply 帧不喂 / 会话站台账 /
+  删除判据与顺序 / 清账时机 / 总开关早退 / 设置类名唯一 / 自己一个 .coc / 总开关 ForceSave /
+  SetDefaults→SyncToState 单路径 / 载入分诊日志 / 12 语言说明文案）。
+- `node scripts/verify.cjs` → 版本四处一致 + T3 `pass=96 fail=0`（新增 6 条：`SuppressPreview` 的 Modify 放行 3 条、
+  `SessionStopLostWaypoint` 4 条；同时把 0.13.0 那三条"Modify 不预览"的断言按新行为改写）。
+- 版本号五处统一（`kVersion` / `Setting.kVersion` / `Frontend/mod.json` / `PublishConfiguration.xml` / mjs 横幅）。
+- `releases/0.14.0/` 快照（dll 110080B / mjs 41833B / mod.json / 两张图标）；`--deployed` 全绿。
+- **发布已成功**：`NewVersion` → `pull-live.js` 回读 `versionId=15 userVersion=0.14.0 size=61759`，
+  ModPublisher 侧 `Access Control Level State: Private`。
+- 发布器上限实测仍然只有两条（ChangeLog ≤ 5000、ShortDescription ≤ 200）；本版 ChangeLog 3084 字符。
+
 **已验证（离线，2026-10-21 v0.13.0）**
 
 - `node scripts/compile-check.js` 0 错误（13 源文件 → 102400B）。
@@ -228,6 +311,17 @@ MSYS_NO_PATHCONV=1 DOTNET_ROLL_FORWARD=Major dotnet "<游戏>\Cities2_Data\Conte
 **未验证（要靠玩家本地实机）**
 
 **未验证（要靠玩家本地实机）**
+
+- **v0.14.0 需求 1 拖拽中要有预览**：在路径点上按住左键开始拖拽后，预览站台应当**跟着光标出现**；
+  松手仍能落地（Apply 帧不喂定义，只晚一帧）。日志看 `[拖拽落站]`。
+- **v0.14.0 需求 2 总开关**：设置页关掉「启用模组」→ 左上角图标立刻消失；
+  重启游戏后仍然是关的。分诊：模组日志 `[设置] 载入后 启用模组=False`，且 UI.log 出现
+  `master off → 隐藏图标`。若后者不出现 ⇒ 前端没收到推送（C# 侧 JSON 里有 master=false）。
+- **v0.14.0 需求 3 下拉框**：选「保留公交站」→ 重启 → 仍是「保留公交站」；
+  设置目录里应出现 `BusLineAutoStops.coc`（老玩家的旧片段仍在 FallbackSettings.coc，值照读）。
+- **v0.14.0 需求 4 右键连删**：修改既有线路 → 拖拽落站 → 右键删掉那一枚路径点 → 站台应一起消失，
+  日志 `[右键撤点] 站台 … 的路径点已被删除`；退出懒人模式后再去删路径点 → 站台**不能**再被连删。
+- **v0.14.0 需求 5 零影响**：总开关关掉后帧数无可测变化；卸载模组后读档无报错。
 
 - **需求 1 拖拽前不预览**（v0.13.0）：鼠标移到既有线路的路径点/路段上，应当**看不到**模拟的公交站；整个拖拽过程中也不显示。
 - **需求 2 路径点依附新站台**（v0.13.0）：拖拽落站后路径点应当接到新站台上、公交真的靠站。日志看 `[拖拽依附] 路点 … → 依附=…`；

@@ -148,9 +148,12 @@ namespace BusLineAutoStops
         ///
         /// 玩家反馈："鼠标移到路径点上还没左键按下去拖拽就已经开始模拟生成一个公交站了"。
         /// 三档判据都取原版自己的判定，不靠猜：
-        /// · <paramref name="state"/> == Modify / Remove：工具已经在拖拽 / 在删点，
-        ///   这时左键的含义是"改线路"（RouteToolSystem.cs:1908-1920 进 Modify、
-        ///   :2025-2052 松手提交），喂出去的幽灵只会跟着光标乱闪。
+        /// · **Modify 态必须预览（v0.14.0 修正）**。0.13.0 把 Modify 也拦掉了，实机反馈
+        ///   "鼠标开始拖拽线路了也不显示预览的公交站"。查原版：`State.Modify` 只可能从
+        ///   `Apply()` 的 Default 分支进入，而那条分支头上的 `GetAllowApply()`
+        ///   （ToolBaseSystem.cs:541-543）就要求"这一帧左键按下了" —— 所以
+        ///   **Modify 态 == 左键按住、正在拖拽**，正是玩家要预览的那个状态。
+        ///   拦它等于把"拖拽中的预览"整个删掉；"拖拽前不预览"靠的是下面 Default 那条。
         /// · Default 态 + <paramref name="hoverOnRouteElement"/>：光标压在既有线路的路径点/路段上。
         ///   原版 `Apply()` 的 Default 分支判据是
         ///   `HasComponent&lt;Route&gt;(cp.m_OriginalEntity) &amp;&amp; math.any(cp.m_ElementIndex &gt;= 0)`
@@ -160,12 +163,33 @@ namespace BusLineAutoStops
         ///   **直接依附**到那枚站台上。这时绝不能喂第二枚模拟站台：幽灵跟站台/AI 物件一碰就带
         ///   `Game.Tools.Error`，而 `ToolBaseSystem.GetAllowApply()`（:541-543）只要全世界存在任何
         ///   Error 就整帧为假 —— 玩家那一笔会被原版直接吞掉（实机 2026-10-21 01:08 就是这样失败的）。
+        /// · Remove 态（右键删点）左键的含义是"确认删除"，不是"放站台"，照样不预览。
         /// </summary>
         public static bool SuppressPreview(ToolLineState state, bool hoverOnRouteElement, bool hoverOnExistingStop)
         {
-            if (state == ToolLineState.Modify || state == ToolLineState.Remove) return true;
+            if (state == ToolLineState.Remove) return true;
             if (hoverOnExistingStop) return true;
+            if (state == ToolLineState.Modify) return false;   // 拖拽中：预览要回来
             return state == ToolLineState.Default && hoverOnRouteElement;
+        }
+
+        /// <summary>
+        /// 需求 4（v0.14.0）：本会话里由模组自动放置的站台，什么时候该跟着"路径点被右键删掉"一起删。
+        ///
+        /// 判据只看两件事，都是我们自己记的账、不猜别人的东西：
+        /// · <paramref name="hadWaypoint"/>：这枚站台**曾经**连着至少一枚活着的路径点
+        ///   （线路画完 / 拖拽依附之后才会有）。没有过 → 现在缓冲区是空的也可能是"还没连上"，
+        ///   绝不能当成"被删了"。
+        /// · <paramref name="liveWaypoints"/>：现在它的 `ConnectedRoute` 里还剩几枚活着的路径点。
+        ///   0 且曾经有过 → 玩家把那一枚（或那几枚）路径点删掉了 → 这枚站台跟着删。
+        ///
+        /// 与退出策略无关（玩家明确要求"这个规则不受保留/删除选项改变"）；
+        /// 只认本会话的账（<c>m_sessionStops</c> 退出即清空），所以老会话的站台、以及玩家自己
+        /// 摆的站台永远不会被这条规则碰到。
+        /// </summary>
+        public static bool SessionStopLostWaypoint(bool hadWaypoint, int liveWaypoints)
+        {
+            return hadWaypoint && liveWaypoints <= 0;
         }
 
         /// <summary>

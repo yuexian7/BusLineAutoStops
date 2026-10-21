@@ -43,14 +43,14 @@ namespace BusLineAutoStops
         /// <summary>
         /// 退出懒人模式时的处置策略（需求 5：只有保留 / 不保留两项）。
         ///
-        /// 默认值**只在 <see cref="Setting.SetDefaults"/> 一处决定**（v0.12.0 起是"不保留"）。
+        /// 默认值**只在 <see cref="BusLineAutoStopsSetting.SetDefaults"/> 一处决定**（v0.12.0 起是"不保留"）。
         /// 这里的字段初值只是"热路径镜像从没被同步过"时的死值，正常流程一定会被
-        /// <see cref="Setting.SyncToState"/> 覆盖，所以刻意写成与 SetDefaults 同值只为读代码不误导。
+        /// <see cref="BusLineAutoStopsSetting.SyncToState"/> 覆盖，所以刻意写成与 SetDefaults 同值只为读代码不误导。
         /// </summary>
         public static volatile ExitDeletePolicy ExitPolicy = TransportKindRules.DefaultExitPolicy();
 
         /// <summary>
-        /// 需求 4（0.9.0）：有轨电车是否放开。本版恒 false（Setting.SyncToState 强制归零），
+        /// 需求 4（0.9.0）：有轨电车是否放开。本版恒 false（BusLineAutoStopsSetting.SyncToState 强制归零），
         /// 设置页那条是置灰的"有轨电车站自动放置（暂未上线）"。
         /// 它只影响"懒人模式能用哪些类别"，不影响资产识别 / 面板过滤 / 查重这些**分类**逻辑。
         /// </summary>
@@ -133,7 +133,7 @@ namespace BusLineAutoStops
             PendingExitCleanup = false;
             // 不重置 PendingExitPolicy：它只在退出请求排队那一刻与 PendingExitCleanup 一起写
             // （BusLineAutoStopsMod.ExitLazyMode），而这里已经把 PendingExitCleanup 清成 false，
-            // 那一行就是死赋值。默认值只在 Setting.SetDefaults 一处决定。
+            // 那一行就是死赋值。默认值只在 BusLineAutoStopsSetting.SetDefaults 一处决定。
             PendingLineKind = TransportKind.None;
             ModeKind = TransportKind.None;
             SelectedStationPrefab = null;

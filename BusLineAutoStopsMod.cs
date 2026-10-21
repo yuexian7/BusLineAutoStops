@@ -27,21 +27,21 @@ namespace BusLineAutoStops
     /// </summary>
     public class BusLineAutoStopsMod : IMod
     {
-        public const string kVersion = "0.13.0";
+        public const string kVersion = "0.14.0";
 
         public static ILog log = LogManager.GetLogger("BusLineAutoStops").SetShowsErrorsInUI(false);
 
         public static BusLineAutoStopsMod Instance;
 
-        private Setting m_Setting;
+        private BusLineAutoStopsSetting m_Setting;
 
         public void OnLoad(UpdateSystem updateSystem)
         {
             Instance = this;
             log.Info("BusLine AutoStops v" + kVersion + " loading...");
 
-            m_Setting = new Setting(this);
-            Setting.Instance = m_Setting;
+            m_Setting = new BusLineAutoStopsSetting(this);
+            BusLineAutoStopsSetting.Instance = m_Setting;
 
             // 1) 先建 action（keyBindingRegistered=true）
             try { m_Setting.RegisterKeyBindings(); }
@@ -51,13 +51,16 @@ namespace BusLineAutoStops
             try
             {
                 Colossal.IO.AssetDatabase.AssetDatabase.global.LoadSettings(
-                    nameof(BusLineAutoStops), m_Setting, new Setting(this));
+                    nameof(BusLineAutoStops), m_Setting, new BusLineAutoStopsSetting(this));
             }
             catch (Exception e)
             {
                 log.Warn("读取设置失败，用默认值：" + e.GetType().Name);
             }
             m_Setting.SyncToState();
+            // v0.14.0：把读到的真值打出来。设置类问题在实机里只能靠这一行分辨
+            // （没读回来 / 读回来又被覆盖 / 压根没写下去），位置紧贴 LoadSettings 之后。
+            m_Setting.LogLoaded("载入后");
 
             // 3) 多语言
             RegisterLocaleSources();
@@ -147,7 +150,7 @@ namespace BusLineAutoStops
         /// </summary>
         public void OnDispose()
         {
-            Setting.Instance = null;
+            BusLineAutoStopsSetting.Instance = null;
             Instance = null;
             log.Info("BusLine AutoStops disposed");
         }
@@ -156,7 +159,7 @@ namespace BusLineAutoStops
         {
             try
             {
-                ProxyAction a = m_Setting.GetAction(Setting.kActionToggleLazy);
+                ProxyAction a = m_Setting.GetAction(BusLineAutoStopsSetting.kActionToggleLazy);
                 if (a == null)
                 {
                     log.Warn("[快捷键] 未取得 action（setting.id=" + m_Setting.id + "）");
@@ -204,7 +207,7 @@ namespace BusLineAutoStops
             try
             {
                 if (m_Setting == null) return;
-                ProxyAction a = m_Setting.GetAction(Setting.kActionToggleLazy);
+                ProxyAction a = m_Setting.GetAction(BusLineAutoStopsSetting.kActionToggleLazy);
                 if (a == null) return;
                 ProxyBinding b = m_Setting.ToggleLazyBinding;
                 bool want = LazyModeState.Enabled && IsBindablePath(b != null ? b.path : null);
@@ -223,7 +226,7 @@ namespace BusLineAutoStops
         {
             try
             {
-                ProxyAction a = m_Setting.GetAction(Setting.kActionToggleLazy);
+                ProxyAction a = m_Setting.GetAction(BusLineAutoStopsSetting.kActionToggleLazy);
                 if (a == null) { log.Warn("[键位] " + when + "：action 为空"); return; }
                 log.Info("[键位] " + when + " enabled=" + a.enabled + " shouldBeEnabled=" + a.shouldBeEnabled);
                 if (a.bindings == null) return;
@@ -266,7 +269,7 @@ namespace BusLineAutoStops
         {
             try
             {
-                ProxyAction a = m_Setting.GetAction(Setting.kActionToggleLazy);
+                ProxyAction a = m_Setting.GetAction(BusLineAutoStopsSetting.kActionToggleLazy);
                 if (a == null)
                 {
                     log.Warn("[键位] 进游戏后：action 为空");
@@ -337,7 +340,7 @@ namespace BusLineAutoStops
             if (!TransportKindRules.IsLazyModeEnabled(kind, LazyModeState.TramEnabled))
             {
                 // 火车/地铁/机场/码头走的是车站（Station）体系，放置规则跟道路无关，不放开；
-                // 有轨电车是"机制还没做完"（见 Setting.TramEnabled），单独一句话告诉玩家为什么。
+                // 有轨电车是"机制还没做完"（见 BusLineAutoStopsSetting.TramEnabled），单独一句话告诉玩家为什么。
                 LazyModeState.ShowWarning(UnsupportedLineKey(kind), 3f, now);
                 log.Info("[懒人模式] 拒绝进入：当前类型 " + kind + " 本版未放开（公交=开，电车="
                     + LazyModeState.TramEnabled + "）");
@@ -448,7 +451,7 @@ namespace BusLineAutoStops
         {
             try
             {
-                ProxyAction a = m_Setting.GetAction(Setting.kActionToggleLazy);
+                ProxyAction a = m_Setting.GetAction(BusLineAutoStopsSetting.kActionToggleLazy);
                 if (a == null) return;
                 ProxyBinding b = m_Setting.ToggleLazyBinding;
                 a.shouldBeEnabled = LazyModeState.Enabled && IsBindablePath(b != null ? b.path : null);

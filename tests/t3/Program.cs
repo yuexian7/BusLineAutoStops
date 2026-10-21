@@ -185,8 +185,15 @@ namespace BusLineAutoStops.Tests
                   "retry: maxFrames=0 立即作废");
 
             // ── v0.13.0 需求 1/3：预览闸门（拖拽前不预览 / 站台依附范围内不预览）──
-            Check(PlacementDecisions.SuppressPreview(ToolLineState.Modify, false, false),
-                  "preview 闸门: 拖拽中（Modify）不预览");
+            // v0.14.0 需求 1：Modify 态 == 左键按住正在拖拽（原版只可能从 Apply() 的 Default 分支
+            // 进 Modify，而那条分支头上的 GetAllowApply() 就要求"这一帧左键按下了"）。
+            // 玩家原话："开始拖拽后（鼠标左键一直按着了）还是要出现预览的啊" —— 所以必须预览。
+            Check(!PlacementDecisions.SuppressPreview(ToolLineState.Modify, false, false),
+                  "preview 闸门: 拖拽中（Modify）必须预览（左键已按下）");
+            Check(!PlacementDecisions.SuppressPreview(ToolLineState.Modify, true, false),
+                  "preview 闸门: 拖拽中即使悬停点落在既有路径点上也照样预览 —— 深压下不等于「下一次左键是拖拽」");
+            Check(PlacementDecisions.SuppressPreview(ToolLineState.Modify, false, true),
+                  "preview 闸门: 拖拽中光标进入既有站台依附范围仍然不预览（原版会直接依附）");
             Check(PlacementDecisions.SuppressPreview(ToolLineState.Remove, false, false),
                   "preview 闸门: 删点中（Remove）不预览");
             Check(PlacementDecisions.SuppressPreview(ToolLineState.Default, true, false),
@@ -201,6 +208,16 @@ namespace BusLineAutoStops.Tests
                   "preview 闸门: 画线途中（Create）即使吸到线路上也要预览 —— 那是加路径点，不是拖拽");
             Check(!PlacementDecisions.SuppressPreview(ToolLineState.Create, false, false),
                   "preview 闸门: 画线途中的空路照常预览");
+
+            // ── v0.14.0 需求 4：右键删路径点 → 本会话自动放置的站台跟着删 ──
+            Check(PlacementDecisions.SessionStopLostWaypoint(true, 0),
+                  "右键撤点: 曾经连着路径点、现在一枚活的都不剩 → 删站台");
+            Check(!PlacementDecisions.SessionStopLostWaypoint(false, 0),
+                  "右键撤点: 从没连上过（刚落地/线路没画完）→ 绝不删");
+            Check(!PlacementDecisions.SessionStopLostWaypoint(true, 1),
+                  "右键撤点: 还挂着一枚活路径点 → 不删（另一条线在用）");
+            Check(!PlacementDecisions.SessionStopLostWaypoint(true, 2),
+                  "右键撤点: 还挂着多枚活路径点 → 不删");
 
             // ── v0.13.0 需求 2：拖拽落地后把被拖路径点接到新站台 ──
             Check(!PlacementDecisions.ShouldAttachDraggedWaypoint(false, false, false),

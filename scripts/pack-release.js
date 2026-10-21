@@ -372,7 +372,8 @@ const modCs = fs.readFileSync(path.join(root, "BusLineAutoStopsMod.cs"), "utf8")
       && lm.includes("IsLazyModeEnabled(kind, LazyModeState.TramEnabled)")
       && modCs.includes('"WARN_TRAM_OFF"'), "");
     push("电车那条选项在设置页置灰不可选（TramOptionDisabled 恒 true）",
-      settingCs.includes('[SettingsUIDisableByCondition(typeof(Setting), nameof(TramOptionDisabled))]')
+      // v0.14.0：设置类改名 BusLineAutoStopsSetting（类名全局唯一，见那一节的钉子）。
+      settingCs.includes('[SettingsUIDisableByCondition(typeof(BusLineAutoStopsSetting), nameof(TramOptionDisabled))]')
       && /public bool TramOptionDisabled\(\)\s*\{\s*return true;/.test(settingCs), "");
     push("本版强制关电车（老存档/手改 config 塞 true 也不放开）",
       /SyncToState\(\)[\s\S]{0,400}?LazyModeState\.TramEnabled = false;/.test(settingCs), "");
@@ -800,9 +801,14 @@ const modCs = fs.readFileSync(path.join(root, "BusLineAutoStopsMod.cs"), "utf8")
 
   // 需求 1：拖拽前/拖拽中不预览。判据不新发明，全部照原版：Modify/Remove 态、"光标压在既有线路
   // 路径点/路段上"= Apply() Default 分支进 Modify 的那条判据（Route 组件 + any(ElementIndex>=0)）。
-  push("v0.13.0 需求1：预览闸门收敛在 PlacementDecisions.SuppressPreview（Modify/Remove、Default 压在路径点上、站台依附范围内）",
+  // v0.14.0 起这条钉子的口径变了：0.13.0 把 Modify 也拦掉了，实机反馈"拖拽中也不显示预览"。
+  // Modify 态 == 左键按住正在拖拽（原版只能从 Apply() 的 Default 分支进 Modify），所以必须放行；
+  // 保留的三条抑制是 Remove（左键在确认删除）、Default 压在既有路径点上（按下之前）、
+  // 既有站台依附范围内（交原版直接依附）。
+  push("v0.14.0 需求1：预览闸门 = Remove / Default 压在路径点上 / 站台依附范围；**拖拽中放行**",
     /public static bool SuppressPreview\(ToolLineState state, bool hoverOnRouteElement, bool hoverOnExistingStop\)/.test(pd13)
-    && pd13.includes("if (state == ToolLineState.Modify || state == ToolLineState.Remove) return true;")
+    && pd13.includes("if (state == ToolLineState.Remove) return true;")
+    && pd13.includes("if (state == ToolLineState.Modify) return false;")
     && pd13.includes("return state == ToolLineState.Default && hoverOnRouteElement;")
     && lm13.includes("PlacementDecisions.SuppressPreview(lineState, hoverRouteElement, hoverExistingStop)")
     && lm13.includes("if (m_settled && !m_previewRefused) MaintainPreview(hover, cursor);"), "");
@@ -901,6 +907,104 @@ const modCs = fs.readFileSync(path.join(root, "BusLineAutoStopsMod.cs"), "utf8")
 }
 
 {
+  // —— v0.14.0：玩家五条反馈（拖拽中要有预览 / 总开关图标不消失 / 下拉框每次重启回默认 /
+  //                右键删路径点要连站台一起删 / 关掉后必须零影响）——
+  const lm14 = srcOf("Systems/LazyModeSystem.cs")
+    .replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\r\n]*/g, "");
+  const pd14 = srcOf("PlacementDecisions.cs")
+    .replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\r\n]*/g, "");
+  const set14 = srcOf("Setting.cs")
+    .replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\r\n]*/g, "");
+  const bodyOf14 = (sig, src) => {
+    const i = src.indexOf(sig);
+    if (i < 0) return "";
+    const m = src.slice(i).match(/[\s\S]*?\n {8}\}/);
+    return m ? m[0] : "";
+  };
+
+  // 需求 1：拖拽中必须预览，而且**绝不能在 Apply 帧喂定义** —— 0.13.0 把 Modify 拦掉时
+  // "拖拽松手帧手上还有幽灵、同帧又喂新定义"根本不可能发生；0.14.0 放行后就会，
+  // 而 ApplyObjectsSystem.Create() 对 Temp 是不过校验不计费直接转正（笔记 #71）。
+  push("v0.14.0 需求1：预览放行到拖拽中，但 Apply 帧一律不喂定义（否则幽灵被免费转正）",
+    pd14.includes("if (state == ToolLineState.Modify) return false;")
+    && lm14.includes("bool previewOkNow = previewOk && phase != kPhaseApply;")
+    && /if \(previewOkNow\)\s*\{/.test(lm14)
+    && lm14.includes("if (phase != kPhaseApply && (m_previewTemp != Entity.Null || m_previewFed)) RetirePreview();"), "");
+
+  // 需求 4：本会话自动放置的站台账（点击 + 拖拽都记），路径点被删光就跟着删。
+  push("v0.14.0 需求4：本会话自动站台账（点击与拖拽都记，补提交幂等）",
+    lm14.includes("private readonly List<SessionStop> m_sessionStops") 
+    && lm14.includes("private void RememberSessionStop(Entity stop)")
+    && lm14.includes("m_sessionStops.Add(new SessionStop { Stop = stop, HadWaypoint = false });")
+    && lm14.includes("RememberSessionStop(temp);"), "");
+  push("v0.14.0 需求4：判据=站台自己的 ConnectedRoute 里还剩几枚活路径点（Deleted 算死）",
+    pd14.includes("public static bool SessionStopLostWaypoint(bool hadWaypoint, int liveWaypoints)")
+    && pd14.includes("return hadWaypoint && liveWaypoints <= 0;")
+    && (() => {
+      const b = bodyOf14("private int CountLiveWaypoints(Entity stop)", lm14);
+      return b.includes("DynamicBuffer<ConnectedRoute> buf = EntityManager.GetBuffer<ConnectedRoute>(stop);")
+        && b.includes("EntityManager.HasComponent<Game.Common.Deleted>(wp)");
+    })()
+    && lm14.includes("PlacementDecisions.SessionStopLostWaypoint(rec.HadWaypoint, live)"), "");
+  push("v0.14.0 需求4：删除前先 FlushPendingJobs + 非 Apply 帧 + 只删自己的账（另一条线在用就不删）",
+    lm14.includes("if (phase != kPhaseApply) MaintainSessionStops();")
+    && (() => {
+      const b = bodyOf14("private void MaintainSessionStops()", lm14);
+      return b.indexOf("FlushPendingJobs();") > 0
+        && b.includes("if (!DeleteIfSafe(stop))")
+        && b.includes("m_placed.IndexOf(stop)");
+    })(), "");
+  push("v0.14.0 需求4：退出懒人模式 / 进入新会话都清账（清掉之后这些站台就是永久的）",
+    (() => {
+      const b = bodyOf14("private void RunExitCleanup(ExitDeletePolicy policy, float now)", lm14);
+      return b.includes("m_sessionStops.Clear()") && b.includes("转为永久");
+    })()
+    && lm14.includes("s.m_sessionStops.Clear();"), "");
+
+  // 需求 5：总开关关掉后一整帧只读几个标志位就返回（性能/帧数零影响的前提）。
+  push("v0.14.0 需求5：总开关关掉时世界侧系统一次 bool 读就返回，但两条收尾队列不被跳过",
+    lm14.includes("if (!LazyModeState.Enabled && !LazyModeState.PendingExitCleanup && !m_beginCleanupPending) return;")
+    && (() => {
+      const iGuard = lm14.indexOf("if (!LazyModeState.Enabled && !LazyModeState.PendingExitCleanup && !m_beginCleanupPending) return;");
+      const iBroken = lm14.indexOf("if (LazyModeState.Broken) return;");
+      const iPending = lm14.indexOf("if (LazyModeState.PendingExitCleanup)");
+      return iBroken > 0 && iGuard > iBroken && iGuard < iPending;
+    })(), "");
+
+  // 需求 2/3：设置落盘寻址。类名必须全局唯一（别人也有个叫 Setting 的类），并且自己一个 .coc。
+  push("v0.14.0 需求2/3：设置类名全局唯一（SaveSpecificSetting 只按类名找目标）",
+    /public class BusLineAutoStopsSetting : ModSetting/.test(set14)
+    && !/typeof\(Setting\)/.test(set14)
+    && !/\bclass Setting : ModSetting/.test(set14), "");
+  push("v0.14.0 需求2/3：设置落在自己的 BusLineAutoStops.coc（不再挤公共 FallbackSettings.coc）",
+    set14.includes('[Colossal.IO.AssetDatabase.FileLocation("BusLineAutoStops")]'), "");
+  push("v0.14.0 需求2：总开关 ForceSave（关掉的状态必须写得下去）",
+    /\[SettingsUIForceSave\]\s*\n\s*public bool AutoPlaceEnabled/.test(set14), "");
+  push("v0.14.0 需求2/3：默认值只决定字段，搬运到运行时状态只走 SyncToState 一条路",
+    (() => {
+      const b = bodyOf14("public override void SetDefaults()", set14);
+      return b.includes("SyncToState();") && !b.includes("LazyModeState.Enabled = true;");
+    })(), "");
+  push("v0.14.0 需求2/3：启动时把真正读到的设置打一行（分诊：没读回来 / 被覆盖 / 没写下去）",
+    set14.includes("public void LogLoaded(string where)")
+    && srcOf("BusLineAutoStopsMod.cs").includes('m_Setting.LogLoaded("载入后");'), "");
+
+  // 需求 4 的说明文案：设置页那条说明必须带上这句规则（12 语言都要有）。
+  push("v0.14.0 需求4：退出策略说明里补上「右键删点连站台一起删、退出后不再删」这句（12 语言）",
+    (() => {
+      const loc = srcOf("LocaleTable.cs");
+      const needles = ["该次懒人模式下自动放置的公交站", "該次懶人模式下自動放置的公車站",
+        "deleted together with the waypoint", "zusammen mit dem per Rechtsklick",
+        "junto con el punto que quites", "sont supprimés avec le point de passage",
+        "insieme alla tappa che rimuovi", "右クリックで削除した通過地点と一緒に",
+        "마우스 오른쪽 버튼으로 삭제한 웨이포인트와 함께", "razem z węzłem trasy skasowanym",
+        "junto com o ponto de passagem removido", "вместе с точкой маршрута"];
+      return needles.every((n) => loc.includes(n))
+        && loc.split('\n\n').length >= 13;
+    })(), "");
+}
+
+{
   // —— v0.12.0 需求 1：总开关（「启用模组」）与快捷键的双向联动 ——
   const modSrc = srcOf("BusLineAutoStopsMod.cs");
   const settingSrc = srcOf("Setting.cs");
@@ -933,7 +1037,9 @@ const modCs = fs.readFileSync(path.join(root, "BusLineAutoStopsMod.cs"), "utf8")
     && rulesSrc.includes("return ExitDeletePolicy.DeleteSessionStops;")
     && settingSrc.includes("m_ExitPolicy = TransportKindRules.DefaultExitPolicy();")
     && /public override void SetDefaults\(\)[\s\S]{0,400}?m_ExitPolicy = TransportKindRules\.DefaultExitPolicy\(\);/.test(settingSrc)
-    && /public override void SetDefaults\(\)[\s\S]{0,400}?LazyModeState\.ExitPolicy = m_ExitPolicy;/.test(settingSrc)
+    // v0.14.0：SetDefaults 只决定字段，搬运到运行时状态统一走 SyncToState（一份来源一条路径）。
+    && /public override void SetDefaults\(\)[\s\S]{0,1000}?SyncToState\(\);/.test(settingSrc)
+    && /public void SyncToState\(\)[\s\S]{0,300}?LazyModeState\.ExitPolicy = m_ExitPolicy;/.test(settingSrc)
     && stateSrc.includes("public static volatile ExitDeletePolicy ExitPolicy = TransportKindRules.DefaultExitPolicy();")
     && stateSrc.includes("public static volatile ExitDeletePolicy PendingExitPolicy = TransportKindRules.DefaultExitPolicy();"), "");
   // PendingExitPolicy 只在退出请求排队那一刻写（与 PendingExitCleanup 一起），

@@ -17,7 +17,7 @@ const root = path.join(__dirname, "..");
 const XML = path.join(root, "Properties", "PublishConfiguration.xml");
 const MODJSON = path.join(root, "Frontend", "mod.json");
 
-const VERSION = "0.13.0";
+const VERSION = "0.14.0";
 
 const NL = "&#xA;";
 const BLANK = "&#xA;&#xA;";
@@ -39,6 +39,7 @@ const enLong = [
   "Removing the mod cannot corrupt a save: no custom component types, no patched game methods, no global tool switches flipped. While the mode is off the systems do nothing at all.",
   "Localized in the 12 official languages with the game's own terminology: bus stop and tram stop are the assets, platform is the station platform, waypoint is the path point. UI text goes through game localization, so Bridge the Language Gap can translate it.",
   "This feature is still being calibrated road by road: on some very wide roads or odd pavements a case may still behave differently. The mod writes a plain-text log (Cities2 Logs folder, BusLineAutoStops.log) that says exactly what it decided and why, so a report with that file gets a precise answer.",
+  "While you are still in the same lazy session, removing a path point with the right mouse button also removes the stop that this session placed on that path point. That rule only covers stops the mod put down in the current session and it ignores the keep/remove option below: once you leave lazy mode those stops are final and can no longer be removed that way.",
 ].join(BLANK);
 
 const zhLong = [
@@ -52,39 +53,30 @@ const zhLong = [
   "卸载本模组不会让存档报错：不写任何自定义组件类型、不打任何补丁、不残留全局开关。模式关着的时候，模组的系统一行世界代码都不写。",
   "12 种官方语言，用词跟随原版：公交站 / 有轨电车站是资产，站台指的是车站月台，两者不是一回事；waypoint 是路径点。界面文字走游戏本地化，Bridge the Language Gap 可以翻译。",
   "这个功能还在逐条道路校准：特别宽的路、形状古怪的人行道上可能仍有表现不一样的情况。模组会把它的判断和原因逐条写进纯文本日志（游戏 Logs 目录下的 BusLineAutoStops.log），带上这个文件的反馈能得到确切答复。",
+  "在同一次懒人模式会话里，用右键去掉一个路径点时，本次会话自动放置在那个路径点上的公交站也会一起删掉。这条规则只管本次会话里模组自己放下的站台，而且与下面的保留/移除选项无关：一旦退出懒人模式，这些站台就算彻底放置好了，再也不能这样一起删。",
 ].join(BLANK);
 
 /* ------------------------------ ChangeLog ------------------------------- */
 const enLog = [
-  "v0.13.0 fixes the drag chain: nothing is simulated before you press, and the path point you drag is attached to the stop that lands.",
-  "- Fixed (no preview before you press): moving the mouse onto one of a line's own path points no longer shows a simulated stop, and nothing is shown during the drag either - that click starts a drag, not a placement. The road under the drag is still remembered silently, so the stop lands on the right road when you let go.",
-  "- Fixed (the dragged path point attaches to the new stop): the point you dragged is connected to the stop that lands, so buses really call there. Before, the stop appeared but the point stayed loose on the road.",
-  "- Fixed (a stop right next to where you point): if the cursor is already inside an existing stop's attach range, the mod no longer simulates a stop - the game snaps the path point onto that stop by itself. The simulated one could collide at the slightly offset spot and get your click refused.",
-  "- Also in this version, from the test builds after 0.11.2: releasing a drag no longer crashes the game (placement waits one frame now); a drag that cannot resolve the road no longer dies on a single bad frame; the toggle hotkey recovers after using the master switch; and ending lazy mode removes the stops this session placed by default, with Keep the bus stops as the option.",
-  "v0.11.2 hardening release: nothing about how a stop gets placed changed, and you should feel no difference while playing.",
-  "- Fixed (diagnostics): the log line that reports the outcome of a preview - how far the game snapped it from the point we fed it, which side of the road it landed on, whether the game accepted the spot - was gated on the same switch as the earlier line, so it never appeared in BusLineAutoStops.log at all. It is output again now, so a log file you send with a report can say exactly where a stop would have landed.",
-  "- Safer (leaving lazy mode): when the mode ends, the mod now waits for the game's in-flight work to finish before it takes back the preview ghost - the same order it already used when the mode starts. That closes one more route to the rare crash that happens when structure changes are made while handles are held.",
-  "- Safer (asset panel): the filtered asset list is now remembered only after it has been built successfully, so a failure half way through can no longer serve the previous list back as if it were the new one.",
-  "- Duplicate check: deciding whether a bus stop is already there no longer depends on whether a line has connected to it. The game gives every stop its connection buffer the moment it is created, so the check now follows the game's own definition of a stop and stays correct for assets that carry the label without the buffer.",
-  "- Author side, no effect on players: before a build is considered ready, the tooling checks the deployed folder is complete (dll, frontend, mod.json, icons), that the version number matches in all four places it is written, and that the compiler is found by asking the SDK rather than by a pinned path.",
+  "v0.14.0 fixes the two settings that kept resetting, and gives the drag its preview back.",
+  "- Fixed (preview while you drag): pressing the left button on one of a line's path points and dragging now shows the preview stop again, following your cursor. 0.13.0 muted it for the whole drag, so you were moving a path point with nothing on screen. Nothing is still simulated before you press: hovering a path point without holding the button remains quiet, because that click is a drag, not a placement.",
+  "- Fixed (the master switch did not stick): turning the mod off came back on after restarting the game, so the top-left icon was there again. The cause was settings being written to the wrong file: two installed mods happened to give their settings class the same name, and the game picks the save target by that class name alone. This mod's settings class now has a name of its own and its own settings file, and the master switch is always written.",
+  "- Fixed (the keep/remove stops dropdown reset every restart): same cause as above, same fix. The dropdown now keeps what you picked. Nothing about how the mod behaves changed with it.",
+  "- New (right click removes the stop too): inside the same lazy session, right click a path point and the stop this session placed on that path point is removed with it. Only stops this mod placed in the current session are affected, stops you placed yourself never are, and the rule ignores the keep/remove option - leaving lazy mode makes those stops final, exactly as before.",
+  "- Safer (turning the mod off): with the master switch off the world-side system now returns after a few flag reads, so the mod costs nothing measurable while it is off. Every change the mod makes is still ordinary game data, so removing the mod cannot damage a save.",
+  "- Diagnostics: the log now prints the settings it actually read at startup, and the frontend console reports every master switch change, so a log file with a report can show exactly what happened.",
+  "- Also in this version, carried over from 0.13.0: the dragged path point is attached to the stop that lands; releasing a drag no longer crashes the game; the toggle hotkey recovers after using the master switch; and ending lazy mode removes the stops this session placed by default, with Keep the bus stops as the option.",
 ].join(NL);
 
 const zhLog = [
-  "v0.13.0 拖拽线路这条链路收拾干净了：拖拽前不再模拟出公交站，拖拽落站时被拖的路径点会依附到新站台上。",
-  "- 修复（拖拽前不再模拟出公交站）：鼠标移到线路自己的路径点上时，不会再冒出一枚模拟的公交站。在那里按左键是拖动这个路径点，所以模组现在全程安静 —— 按下之前与整个拖拽过程中都不显示，屏幕上只有游戏自己的预览。拖拽脚下的那条路仍然会被静默记住，松手落站依旧落在正确的路上。",
-  "- 修复（路径点会依附到新站台）：拖拽落站之后，被拖动的那个路径点会接到这枚站台上，公交真的会靠站。以前站台出现了、路径点却留在路上，因为原版先把线路提交完了，站台那时还不存在。",
-  "- 修复（光标旁边正好有站台时）：光标已经落进既有公交站的依附范围时，模组不再自己模拟一枚站台 —— 原版会把这一笔路径点直接吸附到那枚站台上。模拟的那一枚在稍微偏移的位置上会跟物件碰撞，反而可能让你这一笔被原版拒绝。",
-  "- 修复（拖拽结束时的闪退，0.11.2 之后那个测试版）：落站其实已经走到了，但那一帧游戏正在同一处删掉一个幽灵、又重建一个，而模组把新定义喂进了同一帧。现在落站推迟一帧：松手只记下落点，真正的喂定义放在下一帧。结果完全一样，只是站台晚一帧出现。",
-  "- 修复（解析不出道路的拖拽不再因为一帧抖动就作废）：落点仍旧定格在松手处，但松手后单帧的光标跳变不会再丢掉整笔拖拽；仍解析不出时，就在松手处继续试几帧，不再跟着鼠标跑。",
-  "- 修复（用过总开关之后快捷键失效）：以前关掉模组再打开，切换懒人模式的快捷键会一直停用。现在两个方向都处理，并且每帧复查一次，游戏把它重置掉也能自己恢复。",
-  "- 调整（总开关）：改名「启用模组」，它管的是模组本身，不是懒人模式。关闭时左上角图标不出现，游戏完全恢复原版行为。",
-  "- 调整（默认值）：退出懒人模式时，本次会话里由模组放下的公交站默认就不保留。想接着用这些站台就选「保留公交站」；已经被线路停靠点用上的站台永远保留。",
-  "v0.11.2 加固版：放公交站这件事的玩法一点没变，玩的时候应当感觉不到差别。",
-  "- 修复（日志）：报告预览结果的那一行——原版把幽灵吸附到了哪儿、离我们喂下去的位置多远、落在路的哪一侧、判定是通过还是只是警告——以前被前一行日志的开关吃掉，模组日志里一条都不会出现。现在恢复输出，于是随反馈一起发来的日志能确切说明“这一枚为什么会放在这里 / 为什么没放”。",
-  "- 更稳（退出懒人模式）：模式结束时，模组先等游戏在跑的活儿收干净，再收回那枚预览幽灵，与进入模式时用的是同一套顺序；又少掉一类“持有句柄期间改结构”的罕见崩溃路径。",
-  "- 更稳（资产面板）：过滤名单改成算成功之后才记账，中途出问题时不会把上一份名单当成新名单发回面板。",
-  "- 查重判据：判断“这里是不是已经有公交站”不再取决于有没有线路连上它。原版在建公交站的那一刻就已经把连接缓冲一起给了它，所以现在的判据跟原版自己认公交站的方式一致，遇到只带公交站标记、没有连接缓冲的资产也不会漏判。",
-  "- 开发侧（不影响玩家）：出包前会先检查部署目录四件套齐全（本体、前端、mod.json、图标）、版本号四处一致，编译工具的路径也不再写死某一个 SDK 版本。",
+  "v0.14.0 修掉两个「每次重启都回默认」的设置项，并把拖拽中的预览还回来。",
+  "- 修复（拖拽中显示预览）：在路径点上按住左键开始拖拽之后，预览公交站又回来了，跟着光标走。0.13.0 把整段拖拽都静音了，等于你在拖一个路径点、屏幕上什么都没有。按下之前仍然不模拟：鼠标只是停在路径点上、没按键时不显示 —— 那一下是拖拽，不是放站。",
+  "- 修复（总开关留不住）：关掉模组、重启游戏之后它自己又开了，左上角图标又在那儿。真正原因在落盘寻址：本机装着的两个模组把设置类取了同一个名字，而游戏的保存目标只按类名找。本模组的设置类现在有自己的名字、自己的配置文件，总开关每次都会写下去。",
+  "- 修复（保留/移除公交站的下拉框每次重启回默认）：与上面同因同修。现在你选什么就留什么，模组的行为一点没变。",
+  "- 新增（右键删点连站台一起删）：在同一次懒人模式会话里，右键去掉一个路径点时，本次会话自动放在那个路径点上的公交站会一起删掉。只涉及本次会话里模组自己放下的站台，你自己摆的永远不碰；这条规则与保留/移除选项无关 —— 退出懒人模式之后这些站台就算彻底放置好了，与以前一样。",
+  "- 更稳（关闭模组）：总开关关着时，世界侧的系统读几个标志位就返回，关着的时候模组没有任何可测开销。模组改动的仍然全是游戏自带的数据，卸载不会损坏存档。",
+  "- 分诊（日志）：启动时会把真正读到的设置打一行，前端控制台会把每次总开关变化打一行 —— 带着日志反馈就能看清到底发生了什么。",
+  "- 本版也包含 0.13.0 的那几项：拖拽落站时被拖的路径点会依附到新站台；拖拽松手不再闪退；用过总开关之后快捷键不再失效；退出懒人模式默认不保留本次会话落地的公交站（可选项为「保留公交站」）。",
 ].join(NL);
 
 /* ------------------------------- 写入 ----------------------------------- */

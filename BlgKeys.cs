@@ -16,7 +16,7 @@ namespace BusLineAutoStops
     /// </summary>
     public static class BlgKeys
     {
-        /// <summary>与 Setting.kSettingId 一致；此处重复一份供纯逻辑测试。</summary>
+        /// <summary>与 BusLineAutoStopsSetting.kSettingId 一致；此处重复一份供纯逻辑测试。</summary>
         public const string SettingId = "BusLineAutoStops.BusLineAutoStops.BusLineAutoStopsMod";
 
         /// <summary>BLG Scope.ExtractIdentifier：第一个 '[' 到最后一个 ']'。</summary>

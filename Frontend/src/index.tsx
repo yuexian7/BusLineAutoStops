@@ -696,6 +696,9 @@ const App = () => {
   const [shift, setShift] = useState(0);
   const shiftRef = useRef(0);
   const lastEnabled = useRef<boolean | null>(null);
+  /** 最近一次看到的 master。0.13.0 的日志只在 enabled 变的时候打，master 的变化完全看不见 ——
+   *  玩家反馈"关总开关图标不消失"时，第一轮日志无法分辨是 C# 没推、还是前端没重绘。分开记。 */
+  const lastMaster = useRef<boolean | null>(null);
   /** 最近一次从 GetterValueBinding 推送里看到的 seq；兜底拉取靠它判断推送有没有送到。 */
   const pushedSeq = useRef<number>(-1);
 
@@ -711,6 +714,15 @@ const App = () => {
         );
         lastEnabled.current = parsed.enabled;
       }
+      // 需求 2（v0.14.0）：总开关的变化单独一条 —— 它决定左上角按钮在不在。
+      const masterNow = parsed.master !== false;
+      if (lastMaster.current !== null && lastMaster.current !== masterNow) {
+        console.log(
+          "[BusLineAutoStops] master " + (masterNow ? "on" : "off") +
+            " → " + (masterNow ? "显示图标" : "隐藏图标") + " seq=" + parsed.seq
+        );
+      }
+      lastMaster.current = masterNow;
       setState(parsed);
       setWarningKey(parsed.warningKey || "");
       if (typeof parsed.seq === "number") pushedSeq.current = parsed.seq;
