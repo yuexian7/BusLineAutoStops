@@ -1002,6 +1002,24 @@ const modCs = fs.readFileSync(path.join(root, "BusLineAutoStopsMod.cs"), "utf8")
       return needles.every((n) => loc.includes(n))
         && loc.split('\n\n').length >= 13;
     })(), "");
+
+  // v0.14.1 需求：说明里那句「哪些站点永远不会被移除」改成直接给结论（线路保存后即永远保留），
+  // 后面那句「线路没画完就取消是原版行为」整句删掉。12 语言逐个验：新说法必须在、旧说法必须没。
+  push("v0.14.1：退出策略说明改成「线路保存后即永远保留」，并删掉「没画完就取消」那句（12 语言）",
+    (() => {
+      const loc = srcOf("LocaleTable.cs");
+      const must = ["once a line is saved, its stops are always kept", "线路保存后即永远保留",
+        "路線保存後即永遠保留", "sobald eine Linie gespeichert ist", "una vez guardada la línea",
+        "une fois la ligne enregistrée", "una volta salvata la linea", "路線を保存した時点で",
+        "노선을 저장하면", "po zapisaniu trasy", "depois de a linha ser guardada",
+        "после сохранения маршрута"];
+      // 旧说法（含它的英文原句）一句都不许留：钉子只钉"现在成立的行为"，留着旧句子等于文案两套。
+      const gone = ["没画完", "沒畫完", "unfinished line", "unvollständige Linie abzubrechen",
+        "línea sin terminar", "ligne inachevée", "linea non completata", "未完成の路線",
+        "노선을 완성하지 않고", "nieukończonej trasy", "linha não concluída",
+        "незавершенного маршрута"];
+      return must.every((n) => loc.includes(n)) && gone.every((n) => !loc.includes(n));
+    })(), "");
 }
 
 {

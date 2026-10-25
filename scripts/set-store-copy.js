@@ -17,7 +17,7 @@ const root = path.join(__dirname, "..");
 const XML = path.join(root, "Properties", "PublishConfiguration.xml");
 const MODJSON = path.join(root, "Frontend", "mod.json");
 
-const VERSION = "0.14.0";
+const VERSION = "0.14.1";
 
 const NL = "&#xA;";
 const BLANK = "&#xA;&#xA;";
@@ -35,7 +35,7 @@ const enLong = [
   "Tram stops are split out into their own option and are greyed with “not available yet” in this version. A tram line is drawn stop to stop, not along the road edge like a bus line, so the pavement rule that makes bus previews work does not apply to it; that half needs its own mechanism and comes in a later update. Choosing a tram stop while a bus line is being drawn no longer drags lazy mode into a state where nothing appears.",
   "Nothing about placing is automatic any more. Earlier versions tried to press the place button for you; that mode is gone. Only your left click commits, the mod never writes into the game's input, and a stop that belongs to another line is never touched.",
   "Cost, undo history, error messages and the pavement snapping are all the game's own work: the mod feeds one preview into the game's creation pipeline and the game decides. A pavement that merely has a lamp post or a bin on it still previews, because the game allows a stop there and clears that prop when it lands; a spot the game truly refuses shows nothing.",
-  "Ending it: the icon, the hotkey or the master switch stop the feature. Leaving the line tool - switching to another tool or pressing ESC - ends lazy mode by itself and the icon returns to its normal colour. When lazy mode ends you choose either to keep the stops or to remove only the stops this session placed (removing them is the default in this version); choosing to remove them also removes the waypoints that were attached to those stops, walking back to the first waypoint you placed yourself, so no lonely waypoint marker is left on the road. A stop another line already uses is always kept.",
+  "Ending it: the icon, the hotkey or the master switch stop the feature. Leaving the line tool - switching to another tool or pressing ESC - ends lazy mode by itself and the icon returns to its normal colour. When lazy mode ends you choose either to keep the stops or to remove only the stops this session placed (removing them is the default in this version); choosing to remove them also removes the waypoints that were attached to those stops, walking back to the first waypoint you placed yourself, so no lonely waypoint marker is left on the road. Once a line is saved its stops are always kept.",
   "Removing the mod cannot corrupt a save: no custom component types, no patched game methods, no global tool switches flipped. While the mode is off the systems do nothing at all.",
   "Localized in the 12 official languages with the game's own terminology: bus stop and tram stop are the assets, platform is the station platform, waypoint is the path point. UI text goes through game localization, so Bridge the Language Gap can translate it.",
   "This feature is still being calibrated road by road: on some very wide roads or odd pavements a case may still behave differently. The mod writes a plain-text log (Cities2 Logs folder, BusLineAutoStops.log) that says exactly what it decided and why, so a report with that file gets a precise answer.",
@@ -49,7 +49,7 @@ const zhLong = [
   "有轨电车在这一版被拆成单独一条，并且置灰注明“暂未上线”。电车线路是一个电车站连一个电车站画出来的，不像公交线路那样沿道路边缘落点，所以让公交预览成立的那套人行道规则在它身上不成立；这半边需要自己的一套机制，放到后面的版本。顺带一条：画公交线时误选电车站资产，也不会再把懒人模式拖进“什么都不显示”的状态。",
   "放置这件事不再有任何自动成分。早期版本试过“模组替你按放置键”，那条链路已经整个撤掉：只有你的左键会落地，模组不碰游戏的输入，也绝不碰属于别的线路的站台。",
   "造价、撤销记录、错误提示、人行道吸附都由游戏自己做：模组只往原版的产出管线里喂一枚预览，认不认这个位置由原版判。人行道上有路灯、垃圾桶这类东西时预览照样在 —— 原版允许在这个位置放站台，站台落地时那些物件自己消失；只有原版真的不给放的位置才什么都不显示。",
-  "退出：图标、快捷键或总开关都只是停止这个功能。切去别的工具或按 ESC 离开线路工具，懒人模式自己退出、图标恢复原色。退出时你选：保留公交站，或只移除本次会话里模组落地的公交站（这一版默认就是移除）；选移除时，依附在这些公交站上的路径点也一并撤掉，一路撤到你自己放的那一个为止，路上不会剩一枚孤零零的路径点标志。已经被别的线路用上的公交站永远保留。",
+  "退出：图标、快捷键或总开关都只是停止这个功能。切去别的工具或按 ESC 离开线路工具，懒人模式自己退出、图标恢复原色。退出时你选：保留公交站，或只移除本次会话里模组落地的公交站（这一版默认就是移除）；选移除时，依附在这些公交站上的路径点也一并撤掉，一路撤到你自己放的那一个为止，路上不会剩一枚孤零零的路径点标志。线路保存后即永远保留。",
   "卸载本模组不会让存档报错：不写任何自定义组件类型、不打任何补丁、不残留全局开关。模式关着的时候，模组的系统一行世界代码都不写。",
   "12 种官方语言，用词跟随原版：公交站 / 有轨电车站是资产，站台指的是车站月台，两者不是一回事；waypoint 是路径点。界面文字走游戏本地化，Bridge the Language Gap 可以翻译。",
   "这个功能还在逐条道路校准：特别宽的路、形状古怪的人行道上可能仍有表现不一样的情况。模组会把它的判断和原因逐条写进纯文本日志（游戏 Logs 目录下的 BusLineAutoStops.log），带上这个文件的反馈能得到确切答复。",
@@ -58,25 +58,15 @@ const zhLong = [
 
 /* ------------------------------ ChangeLog ------------------------------- */
 const enLog = [
-  "v0.14.0 fixes the two settings that kept resetting, and gives the drag its preview back.",
-  "- Fixed (preview while you drag): pressing the left button on one of a line's path points and dragging now shows the preview stop again, following your cursor. 0.13.0 muted it for the whole drag, so you were moving a path point with nothing on screen. Nothing is still simulated before you press: hovering a path point without holding the button remains quiet, because that click is a drag, not a placement.",
-  "- Fixed (the master switch did not stick): turning the mod off came back on after restarting the game, so the top-left icon was there again. The cause was settings being written to the wrong file: two installed mods happened to give their settings class the same name, and the game picks the save target by that class name alone. This mod's settings class now has a name of its own and its own settings file, and the master switch is always written.",
-  "- Fixed (the keep/remove stops dropdown reset every restart): same cause as above, same fix. The dropdown now keeps what you picked. Nothing about how the mod behaves changed with it.",
-  "- New (right click removes the stop too): inside the same lazy session, right click a path point and the stop this session placed on that path point is removed with it. Only stops this mod placed in the current session are affected, stops you placed yourself never are, and the rule ignores the keep/remove option - leaving lazy mode makes those stops final, exactly as before.",
-  "- Safer (turning the mod off): with the master switch off the world-side system now returns after a few flag reads, so the mod costs nothing measurable while it is off. Every change the mod makes is still ordinary game data, so removing the mod cannot damage a save.",
-  "- Diagnostics: the log now prints the settings it actually read at startup, and the frontend console reports every master switch change, so a log file with a report can show exactly what happened.",
-  "- Also in this version, carried over from 0.13.0: the dragged path point is attached to the stop that lands; releasing a drag no longer crashes the game; the toggle hotkey recovers after using the master switch; and ending lazy mode removes the stops this session placed by default, with Keep the bus stops as the option.",
+  "v0.14.1 changes one option's wording in all 12 languages; the mod behaves exactly as in 0.14.0.",
+  "- Reworded (keep/remove bus stops description): the clause about stops that are never removed now states the outcome plainly - once a line is saved, its stops are always kept. The sentence that followed it, explaining that cancelling an unfinished line is the game's own behaviour, is removed; it cost more reading than it was worth.",
+  "- Unchanged from 0.14.0: the preview comes back while you drag, the master switch and the keep/remove dropdown survive a restart, right clicking a path point also removes the stop this session placed on it, and the mod costs nothing while switched off.",
 ].join(NL);
 
 const zhLog = [
-  "v0.14.0 修掉两个「每次重启都回默认」的设置项，并把拖拽中的预览还回来。",
-  "- 修复（拖拽中显示预览）：在路径点上按住左键开始拖拽之后，预览公交站又回来了，跟着光标走。0.13.0 把整段拖拽都静音了，等于你在拖一个路径点、屏幕上什么都没有。按下之前仍然不模拟：鼠标只是停在路径点上、没按键时不显示 —— 那一下是拖拽，不是放站。",
-  "- 修复（总开关留不住）：关掉模组、重启游戏之后它自己又开了，左上角图标又在那儿。真正原因在落盘寻址：本机装着的两个模组把设置类取了同一个名字，而游戏的保存目标只按类名找。本模组的设置类现在有自己的名字、自己的配置文件，总开关每次都会写下去。",
-  "- 修复（保留/移除公交站的下拉框每次重启回默认）：与上面同因同修。现在你选什么就留什么，模组的行为一点没变。",
-  "- 新增（右键删点连站台一起删）：在同一次懒人模式会话里，右键去掉一个路径点时，本次会话自动放在那个路径点上的公交站会一起删掉。只涉及本次会话里模组自己放下的站台，你自己摆的永远不碰；这条规则与保留/移除选项无关 —— 退出懒人模式之后这些站台就算彻底放置好了，与以前一样。",
-  "- 更稳（关闭模组）：总开关关着时，世界侧的系统读几个标志位就返回，关着的时候模组没有任何可测开销。模组改动的仍然全是游戏自带的数据，卸载不会损坏存档。",
-  "- 分诊（日志）：启动时会把真正读到的设置打一行，前端控制台会把每次总开关变化打一行 —— 带着日志反馈就能看清到底发生了什么。",
-  "- 本版也包含 0.13.0 的那几项：拖拽落站时被拖的路径点会依附到新站台；拖拽松手不再闪退；用过总开关之后快捷键不再失效；退出懒人模式默认不保留本次会话落地的公交站（可选项为「保留公交站」）。",
+  "v0.14.1 只改了一条选项说明的措辞（12 种语言），模组行为与 0.14.0 完全一致。",
+  "- 改写（保留/移除公交站的说明）：关于哪些站点永远不会被移除的那一句，现在直接说结论 —— 线路保存后即永远保留。它后面那句「线路没画完就取消是原版行为」删掉了，读懂它的成本比它带来的信息还高。",
+  "- 与 0.14.0 一致、未变：拖拽中照样有预览；总开关与保留/移除下拉框重启后保持；右键删路径点连带删掉本次会话放的站台；关掉模组时零开销。",
 ].join(NL);
 
 /* ------------------------------- 写入 ----------------------------------- */
