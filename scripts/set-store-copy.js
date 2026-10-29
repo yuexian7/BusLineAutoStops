@@ -17,7 +17,7 @@ const root = path.join(__dirname, "..");
 const XML = path.join(root, "Properties", "PublishConfiguration.xml");
 const MODJSON = path.join(root, "Frontend", "mod.json");
 
-const VERSION = "0.14.1";
+const VERSION = "0.14.2";
 
 const NL = "&#xA;";
 const BLANK = "&#xA;&#xA;";
@@ -58,15 +58,15 @@ const zhLong = [
 
 /* ------------------------------ ChangeLog ------------------------------- */
 const enLog = [
-  "v0.14.1 changes one option's wording in all 12 languages; the mod behaves exactly as in 0.14.0.",
-  "- Reworded (keep/remove bus stops description): the clause about stops that are never removed now states the outcome plainly - once a line is saved, its stops are always kept. The sentence that followed it, explaining that cancelling an unfinished line is the game's own behaviour, is removed; it cost more reading than it was worth.",
-  "- Unchanged from 0.14.0: the preview comes back while you drag, the master switch and the keep/remove dropdown survive a restart, right clicking a path point also removes the stop this session placed on it, and the mod costs nothing while switched off.",
+  "v0.14.2 fixes the keep/remove bus stops option falling back to keep on every restart, and its default is now remove.",
+  "- Root cause: that option was stored in the settings file under its property name, and versions up to 0.11.x wrote keep as their own default. A value left behind by an old default is indistinguishable from a deliberate choice, so the new default could never take effect. The option is stored under a new key now, which also drops the stale value from existing settings files.",
+  "- Unchanged from 0.14.1: the wording of that option's description, the preview while you drag, the master switch, right clicking a path point also removing the stop this session placed on it, and no cost while switched off.",
 ].join(NL);
 
 const zhLog = [
-  "v0.14.1 只改了一条选项说明的措辞（12 种语言），模组行为与 0.14.0 完全一致。",
-  "- 改写（保留/移除公交站的说明）：关于哪些站点永远不会被移除的那一句，现在直接说结论 —— 线路保存后即永远保留。它后面那句「线路没画完就取消是原版行为」删掉了，读懂它的成本比它带来的信息还高。",
-  "- 与 0.14.0 一致、未变：拖拽中照样有预览；总开关与保留/移除下拉框重启后保持；右键删路径点连带删掉本次会话放的站台；关掉模组时零开销。",
+  "v0.14.2 修复「退出懒人模式时」每次重启都变回「保留公交站」，并把默认值定为「不保留」。",
+  "- 根因：这一项是按属性名写进设置文件的，而 0.11.x 及更早版本的默认值本身就是「保留」。由旧默认写进去的值，和玩家真的选过「保留」在文件里一模一样、分不出来，所以新默认永远轮不到生效。现在这一项改用新的落盘键名，老文件里那条旧值也会随之丢掉。",
+  "- 与 0.14.1 一致、未变：这条选项说明的措辞、拖拽中的预览、总开关、右键删路径点连带删掉本次会话放的站台、关掉模组时零开销。",
 ].join(NL);
 
 /* ------------------------------- 写入 ----------------------------------- */

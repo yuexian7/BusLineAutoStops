@@ -27,7 +27,7 @@ namespace BusLineAutoStops
     /// </summary>
     public class BusLineAutoStopsMod : IMod
     {
-        public const string kVersion = "0.14.1";
+        public const string kVersion = "0.14.2";
 
         public static ILog log = LogManager.GetLogger("BusLineAutoStops").SetShowsErrorsInUI(false);
 

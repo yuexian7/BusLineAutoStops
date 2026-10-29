@@ -1023,6 +1023,39 @@ const modCs = fs.readFileSync(path.join(root, "BusLineAutoStopsMod.cs"), "utf8")
 }
 
 {
+  // —— v0.14.2 需求：「退出懒人模式时」下拉框每次重启都回到「保留公交站」——
+  // 根因既不在 UI 也不在 SetDefaults：落盘里存的是**属性名**，而 0.5.0–0.11.x 的默认值本身就是
+  // KeepStops，于是老玩家的文件里几乎都躺着 "ExitPolicy":"KeepStops"。它跟"玩家真的选过保留"
+  // 在文件里一模一样，键在就不会走默认值 —— 改 SetDefaults 永远轮不到执行。
+  // 修法是换持久化键名：JSON 解码逐键 TryGetDecodableMember，未命中静默跳过（JSON.cs:624-637），
+  // 老键因此失效、值回到字段初值；下次保存时 DiffWithPersistent 按属性名回填，找不到同名属性，
+  // 老键顺手被丢掉、不会复活。
+  const set142 = srcOf("Setting.cs");
+  const loc142 = srcOf("LocaleTable.cs");
+  const rules142 = srcOf("TransportKindRules.cs");
+
+  push("v0.14.2：退出策略属性改名 StopPolicy（换落盘键名，老文件里的旧默认值就此失效）",
+    /public ExitDeletePolicy StopPolicy\b/.test(set142)
+    // 旧名字不许回来：只要还叫 ExitPolicy，老文件里那条值就继续压着默认值。
+    && !/public ExitDeletePolicy ExitPolicy\b/.test(set142), "");
+
+  push("v0.14.2：StopPolicy 两条属性都在（ForceSave + 受总开关置灰），改名没把它们丢掉",
+    /\[SettingsUIForceSave\]\s*\n\s*\[SettingsUIDisableByCondition\(typeof\(BusLineAutoStopsSetting\), nameof\(LazyOptionsDisabled\)\)\]\s*\n\s*public ExitDeletePolicy StopPolicy\b/.test(set142), "");
+
+  push("v0.14.2：setter 仍是归一 + 写运行时状态 + 打一行（实机日志据此判断值进没进设置对象）",
+    /set\s*\{[\s\S]{0,900}?LazyModeState\.ExitPolicy = v;[\s\S]{0,300}?log\.Info\("\[选项\] 退出懒人模式时 = "/.test(set142), "");
+
+  push("v0.14.2：设置页那两条 key 跟着改成 nameof(StopPolicy)（否则这条没标题没说明）",
+    loc142.includes("GetOptionLabelLocaleID(nameof(BusLineAutoStopsSetting.StopPolicy))")
+    && loc142.includes("GetOptionDescLocaleID(nameof(BusLineAutoStopsSetting.StopPolicy))")
+    && !loc142.includes("nameof(BusLineAutoStopsSetting.ExitPolicy)"), "");
+
+  push("v0.14.2：默认值仍只有一个来源（不保留），换键名没有顺手改语义",
+    rules142.includes("return ExitDeletePolicy.DeleteSessionStops;")
+    && set142.includes("private ExitDeletePolicy m_ExitPolicy = TransportKindRules.DefaultExitPolicy();"), "");
+}
+
+{
   // —— v0.12.0 需求 1：总开关（「启用模组」）与快捷键的双向联动 ——
   const modSrc = srcOf("BusLineAutoStopsMod.cs");
   const settingSrc = srcOf("Setting.cs");

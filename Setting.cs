@@ -43,8 +43,21 @@ namespace BusLineAutoStops
     ///    （`AssetDatabase.LoadSettings` 里 `assetName` 的兜底值），跟几十个模组挤一个文件：
     ///    任何一次别人的保存都会把整份文件重写一遍，我们的片段在不在、值是多少全看别人什么时候存。
     ///    → 加 `[FileLocation("BusLineAutoStops")]`（`FileLocationAttribute` 会把扩展名改成 .coc）。
-    ///    老玩家已存在的片段仍留在 FallbackSettings.coc，而 `LoadSettings` 是按**片段名**在数据库里找的，
-    ///    所以读得到、不会丢；只是从今往后的写入落在自己的文件里。
+    ///    但它只决定**新建**片段落在哪个文件（`AssetDatabase.CreateSettingsAsset`）：老玩家数据库里
+    ///    已经有同名片段时，`LoadSettings` 直接复用那一份，`ApplyAndSave` 也跟着写回它原来所在的文件
+    ///    （`SaveSpecificSetting` → `GetTargetSetting` 按片段找 `fragment.source`），
+    ///    所以老玩家的值仍住在 `FallbackSettings.coc` —— `[FileLocation]` 既不会把值搬走、也不会重置它。
+    ///
+    /// 3) **改默认值必须换持久化键名**（v0.14.2，玩家 0.14.1 反馈「下拉框还是回到保留」）。
+    ///    落盘里存的是**属性名**（`"ExitPolicy":"KeepStops"`），读回时 `JSON.WriteInto` 逐键调
+    ///    `TryGetDecodableMember`：命中就写、没命中就**静默跳过**（JSON.cs:624-637，不抛异常、不影响别的键）。
+    ///    而 0.5.0–0.11.x 的老默认就是 `KeepStops`，于是老玩家的文件里几乎都躺着
+    ///    `"ExitPolicy":"KeepStops"` —— 它跟"玩家真的选过保留"在文件里**长得一模一样**，
+    ///    靠值判断永远分不出来；只要这个键还在，`SetDefaults` 就永远轮不到执行（键存在就不用默认）。
+    ///    → 属性改名 `StopPolicy`：老键成了未知键被跳过，值回落到字段初值
+    ///      （`m_ExitPolicy = TransportKindRules.DefaultExitPolicy()`，与 `SetDefaults` 取同一个常量 =「不保留」）；
+    ///      第一次保存时 `DiffWithPersistent` 按属性名回填老键，找不到同名属性，老键顺手被丢掉、不会复活。
+    ///      **以后凡是改默认值，都必须同时换键名**，否则老玩家永远看不到新默认。
     /// </summary>
     [SettingsUIKeyboardAction(kActionToggleLazy)]
     [SettingsUIGroupOrder(kGroupMaster, kGroupMain, kGroupAbout)]
@@ -66,7 +79,7 @@ namespace BusLineAutoStops
         // 版本五处统一（Mod.cs kVersion / BusLineAutoStopsSetting.kVersion / Frontend mod.json /
         // PublishConfiguration.xml / releases 快照）：0.10.0 时这里曾落后两版，
         // 玩家在设置页看到错版本号、报日志误判——pack-release 的版本钉子已把本文件纳入
-        public const string kVersion = "0.14.1";
+        public const string kVersion = "0.14.2";
         public const string kAuthor = "yuexian";
 
         public const string kKoFiUrl = "https://ko-fi.com/yuexian7";
@@ -136,14 +149,20 @@ namespace BusLineAutoStops
         }
 
         /// <summary>
-        /// 退出懒人模式时怎么处置本次自动落地的公交站（需求 5：只有两项，默认保留）。
-        /// 老存档里可能还存着 0.5.0 那套四项枚举的值（2/3 已经不存在了）：这里一律归一到
-        /// "保留公交站"，绝不让一个玩家没选过的删除行为发生。
+        /// 退出懒人模式时怎么处置本次自动落地的公交站（需求 5：只有两项，默认**不保留**）。
+        ///
+        /// v0.14.2：属性名从 `ExitPolicy` 改成 `StopPolicy` —— 换的是**落盘键名**，语义一点没动。
+        /// 理由见类注释第 3 条：老玩家文件里那句 `"ExitPolicy":"KeepStops"`（0.5.0–0.11.x 的旧默认）
+        /// 跟"玩家真的选过保留"在文件里无法区分，只有换键才能让新默认真正落到老玩家身上。
+        ///
+        /// 老存档里可能还存着 0.5.0 那套四项枚举的值（2/3 已经不存在了），或者有人手改过文件：
+        /// 这里一律归一到两项之一（只认 DeleteSessionStops，其余全按 KeepStops），
+        /// 绝不让一个玩家没选过的删除行为发生。
         /// </summary>
         [SettingsUISection(kTabGeneral, kGroupMain)]
         [SettingsUIForceSave]
         [SettingsUIDisableByCondition(typeof(BusLineAutoStopsSetting), nameof(LazyOptionsDisabled))]
-        public ExitDeletePolicy ExitPolicy
+        public ExitDeletePolicy StopPolicy
         {
             get { return m_ExitPolicy; }
             set
@@ -154,6 +173,9 @@ namespace BusLineAutoStops
                 if (m_ExitPolicy == v) return;
                 m_ExitPolicy = v;
                 LazyModeState.ExitPolicy = v;
+                // 读取落盘与玩家改选都会走到这里，所以措辞中性：实机日志里出现这一行，
+                // 就说明"值确实进了设置对象"，再配上 LogLoaded 的收尾行即可判断存没存住。
+                BusLineAutoStopsMod.log.Info("[选项] 退出懒人模式时 = " + v);
             }
         }
 

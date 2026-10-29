@@ -1,11 +1,12 @@
-# BusLine AutoStops 架构速览（v0.14.1）
+# BusLine AutoStops 架构速览（v0.14.2）
 
 给下一个接手者的最小集：现行机制、硬不变量、构建命令、待办。
 逐版迭代史与机制取证（96 条校正、每版实机日志）在 `docs/history/开发笔记-v0.1.1~v0.11.1.md`（已冻结，只查不改）。
-当前版本状态：**v0.14.1 已本地部署、离线门禁全绿（189 条钉子 + 96 条 T3）、已上传线上（versionId=16，0.14.1，仍 Private）**：ModId 160528 / dll 107520B / mjs 41833B / 线上包 61017B。
-0.14.1 只改一条选项说明的措辞（12 语言），零代码行为改动：见下"v0.14.1 本轮修订"。
-0.14.0 修玩家五条反馈：拖拽中要有预览、关总开关图标不消失、退出策略下拉框每次重启回默认、右键删路径点要连站台一起删、关掉后必须零影响。
-其中"设置每次重启回默认"是真的落盘寻址 bug（见下），与 UI 渲染无关；拖拽预览则是 0.13.0 拦过头了。
+当前版本状态：**v0.14.2 已本地部署、离线门禁全绿（194 条钉子 + 96 条 T3）、已上传线上（versionId=17，0.14.2，仍 Private）**：ModId 160528 / dll 107520B / mjs 41833B / 线上包 61020B。
+0.14.2 只修一件事：「退出懒人模式时」下拉框每次重启都回到「保留公交站」；默认值按玩家要求定为「不保留」。
+根因是**落盘键名**（不是 UI、也不是 SetDefaults）：老文件里那句旧默认值跟玩家真选过的值长得一样，只有换键才失效 —— 见下"v0.14.2 本轮修订"，那条规律以后每次改默认值都要用。
+0.14.1 只改一条选项说明的措辞（12 语言），零代码行为改动；0.14.0 修玩家五条反馈：拖拽中要有预览、关总开关图标不消失、退出策略下拉框每次重启回默认、右键删路径点要连站台一起删、关掉后必须零影响。
+其中"设置每次重启回默认"在 0.14.0 修了落盘寻址的两个 bug（类名唯一 + 自己一个 .coc），0.14.2 才修掉最后这一层：**值本身是旧默认写进去的**。
 **0.12.0 / 0.12.1 只在本机验证过、从未上传**（线上一直停在 0.11.2），它们的内容（拖拽放站、松手帧闪退修复、总开关与快捷键联动、退出策略默认不保留）合并进 0.13.0 一起上线。
 
 ## 机制一页纸：懒人模式状态机
@@ -29,6 +30,46 @@
 | 89 | **`Temp.m_Original == Entity.Null` 才是本模组造的幽灵**，`!= Null` 是原版的复制/选中副本（原件正被 `Hidden` 藏着）→ 判己防误删，删副本 = 玩家看到"站台消失" | 副本要等 `SubObjectHiddenSystem` 确认没有活 Temp 指回原件才解除隐藏 |
 | 90 | **落点定侧只由喂点的有符号横向偏移决定**（喂点用射线真实命中点，不用控制点位置） | `SnapRouteLane` 用 `dot(MathUtils.Right(切向), 喂点-曲线点)` 选车道，`SnapSegmentAreas` 再用它选可建造区；喂错点 = 落到对面人行道 |
 
+## v0.14.2 本轮修订（2026-10-29，一个下拉框 + 一条落盘规律）
+
+玩家原话："切换懒人模式的快捷键还是会被重置为保留（默认改成不保留吧），你再修复一下"。
+（玩家把设置页那一栏说成"快捷键"，指的就是「退出懒人模式时」那条下拉框；`ToggleLazyBinding` 本身一直是好的，
+`FallbackSettings.coc` 里 `"ToggleLazyBinding":{"m_Path":"<Keyboard>/g"}` 读得回来。）
+
+**现象**：每次重启游戏，那条下拉框都显示「保留公交站」，哪怕上一场改成了「不保留」。
+**不是** UI 渲染问题（0.14.0 已经证明推送链路通）、**也不是** `SetDefaults` 没改（代码里默认早就是
+`DeleteSessionStops`）。真根因是**落盘里那个键还带着旧默认值**：
+
+1. 设置文件存的是**属性名**：`"ExitPolicy":"KeepStops"`。
+2. 而 `KeepStops` 正是 0.5.0–0.11.x 的**默认值**（0.12.0 才把默认改成不保留）。默认值也会被写进文件
+   （这条属性带 `[SettingsUIForceSave]`，永远写），于是**老玩家的文件里几乎都躺着一个 KeepStops**。
+3. 读回时 `AssetDatabase.LoadSettings` → `JSON.WriteInto`：键在就写进设置对象，**键在就不走默认值**
+   （`Setting.SetDefaults` 只在 `SharedSettings.Reset()` / `SetDefaultsWithoutApplying()` 时被调，
+   模组设置载入时根本不会调）。于是新默认永远轮不到执行，玩家看到的永远是「保留」。
+4. 致命之处在于**无法区分**：由旧默认写进去的 `KeepStops`，和玩家真的点选过「保留」，在文件里一模一样。
+
+**修法：换持久化键名**（`ExitPolicy` → `StopPolicy`，语义与字段 `m_ExitPolicy` 一律不动）。
+依据是解码器对未知键的处理 —— `JSON.TryGetDecodableMember`（`research/decompiled/JSON.cs:655-683`）返回 false 时，
+`DecodeObject` 的循环（同文件 `:624-637`）**静默跳过**：不抛异常、不影响别的键、更不会把整份片段丢掉。
+于是老文件里的 `ExitPolicy` 变成未知键被忽略，值回落到字段初值 `TransportKindRules.DefaultExitPolicy()`
+（= 不保留）；下一次保存时 `DiffWithPersistent` 按属性名回填老键，找不到同名属性，**旧键顺手被丢掉、不会复活**。
+
+配套三处必须同时改，缺一个就出事：
+
+| 位置 | 改动 | 不改的后果 |
+|------|------|------------|
+| `Setting.cs` | 属性 `ExitPolicy` → `StopPolicy` | 老值继续压着默认值，玩家重启后还是「保留」 |
+| `LocaleTable.cs` | `nameof(...ExitPolicy)` → `nameof(...StopPolicy)`（label + desc 两条） | 设置页这一条**没有标题和说明**（key 是 `nameof` 现算的） |
+| `Setting.cs` setter | 加一行 `[选项] 退出懒人模式时 = …` | 下次实机出问题分不清"值没进设置对象"还是"没写下去" |
+
+**由此定下一条以后每次改默认值都要遵守的规律**（已写进 `Setting.cs` 类注释第 3 条）：
+**改默认值 = 改默认值 + 换落盘键名**。只改 `SetDefaults` 对老玩家完全无效，因为键一直在。
+
+顺带核实（同一族问题，本版不动）：`[FileLocation("BusLineAutoStops")]` 只决定**新建**片段落在哪个文件
+（`AssetDatabase.CreateSettingsAsset`）；老玩家数据库里已有同名片段时，`LoadSettings` 直接复用那一份、
+`ApplyAndSave` 也跟着写回它原来所在的文件（`SaveSpecificSetting` → `GetTargetSetting` 按片段找 `fragment.source`）。
+所以老玩家的值仍住在 `FallbackSettings.coc` —— 0.14.0 那条注释里"从此写入落在自己的文件里"的说法**只对新装成立**，已改正。
+
 ## v0.14.1 本轮修订（2026-10-26，纯文案）
 
 玩家要求（原话）："ExitPolicy 说明里『已经被线路路径点用上的站点永远保留』改成『线路保存后即永远保留』，后面那句『线路没画完……』删掉。"
@@ -36,9 +77,7 @@
 - 改动面只有一处语义：`LocaleTable.cs` 的 `policy.desc`（12 语言）里那句"永远保留"的判据，
   从"被路径点用上"改成直接给结论"**线路保存后即永远保留**"，并整句删掉随后的"线路没画完就取消是原版行为…"。
 - 为什么删得掉：那句话解释的是原版行为，与这个选项无关；而它前面那句已经说清了范围（只管本会话自动放置的站台），
-  后面那条 `
-
-` 注意段也说清了右键连删规则 —— 留着它只是让玩家在设置页多读一行无关信息。
+  后面那条「注意……」段也说清了右键连删规则 —— 留着它只是让玩家在设置页多读一行无关信息。
 - 语义没变，代码没动：`DeleteIfSafe`（`Systems/LazyModeSystem.cs:3141`）的判据仍是"站台自己的 `ConnectedRoute` 里
   还有活着路径点就不删"，也就是"线路保存后它的路径点活着 → 永远保留"。所以这条是**文案改口，不是行为改口**。
 - 同一句论断还出现在两处玩家可见文案里，一并改口免得一处新一处旧：商店长描述（`scripts/set-store-copy.js`
@@ -196,6 +235,8 @@ Player.log 收尾是 `Native Crash Reporting / Got a UNKNOWN while executing nat
 顺带按玩家意见收敛默认值：`ExitPolicy` 的**唯一决策点只有 `Setting.SetDefaults`**；
 `LazyModeState.ExitPolicy` / `PendingExitPolicy` 是热路径镜像与排队中间量（正常流程一定被覆盖），
 `ResetForNewWorld` 里那行 `PendingExitPolicy = …` 是死赋值（上一行已把 `PendingExitCleanup` 清掉），已删除。
+⚠️ v0.14.2 补一条：`SetDefaults` **只对"文件里没有这个键"的人生效**。老玩家的文件里有键（旧默认写进去的），
+所以那一次改默认值其实一个人都没生效 —— 详见上面 v0.14.2 那节；改默认值必须连键名一起换。
 
 ## v0.12.0 本轮修订（2026-10-20，玩家三条需求）
 
@@ -236,7 +277,7 @@ Player.log 收尾是 `Native Crash Reporting / Got a UNKNOWN while executing nat
 ```powershell
 node scripts/compile-check.js        # 只做 C# 编译检查，不部署不跑 webpack
 node scripts/deploy-local.js         # Roslyn 直编 DLL → 铺完整产物到本机 Mods\BusLineAutoStops\
-node scripts/pack-release.js <版本>   # 打包 releases/<版本>/（DLL+mjs+mod.json+images）并自检，发布打包的事实标准（本版 188 枚钉子）
+node scripts/pack-release.js <版本>   # 打包 releases/<版本>/（DLL+mjs+mod.json+images）并自检，发布打包的事实标准（本版 194 枚钉子）
 ```
 
 官方工具链 `dotnet build` 已修复可用（0 警告 0 错误；csproj 已补 `Colossal.UI.Binding` 引用、删死 Harmony 配置、`math.isfinite` 替代 net48 没有的 `float.IsFinite`），适合 IDE/编译校验；**发布打包仍以 `scripts/pack-release.js` 为准**。
@@ -262,6 +303,7 @@ node scripts/set-store-copy.js          # 写面向玩家的 4 个字段 + mod.j
 | `releases/<版本>/` | 打包快照 | pack-release |
 
 流程：改两处 `kVersion` → 改 `scripts/set-store-copy.js` 的 `VERSION` 与 ChangeLog → `node scripts/set-store-copy.js` → `node scripts/pack-release.js <版本>` → `node scripts/verify.cjs --deployed`。
+**改默认值另有一条**（v0.14.2 定案）：默认值 + 落盘键名要一起改，否则老玩家永远看不到新默认（见 v0.14.2 那节）。
 
 ## 发布序列（本模组）
 
@@ -283,12 +325,25 @@ MSYS_NO_PATHCONV=1 DOTNET_ROLL_FORWARD=Major dotnet "<游戏>\Cities2_Data\Conte
 | `deploy-local.js` | Roslyn 直编 + 部署到本机 `Mods\BusLineAutoStops\`（默认强制重跑 webpack） |
 | `dotnet-sdk.js` | **v0.11.2 新增**：解析本机最新 8.x SDK 的 `csc.dll` 与 `NETCore.App.Ref` 引用目录（三条构建链共用，别再写死版本号） |
 | `paths.js` | **v0.11.2 新增**：游戏目录 / 部署目录 / 部署白名单四项的唯一真值（deploy-local 与 verify --deployed 读同一处） |
-| `pack-release.js` | 打包 `releases/<版本>/` 并做版本/需求/安全自检（175 枚钉子，防发旧产物与死分支） |
+| `pack-release.js` | 打包 `releases/<版本>/` 并做版本/需求/安全自检（194 枚钉子，防发旧产物与死分支） |
 | `pull-live.js` | 只读核对 Paradox 线上版本表（写 `research/live-versions.json`） |
 | `set-store-copy.js` | 写 `PublishConfiguration.xml` 面向玩家的 4 个字段 + `Frontend/mod.json` |
 | `verify.cjs` | 离线门禁：版本四处一致 + T3 +（`--deployed`）部署完整性 |
 
 ## 验证台账
+
+**已验证（离线，2026-10-29 v0.14.2）**
+
+- `node scripts/compile-check.js` 0 错误（13 源文件 → 107520B；与 0.14.1 同尺寸 —— `ExitPolicy` 与 `StopPolicy` 恰好同长 10 字符）。
+- `node scripts/pack-release.js 0.14.2` 全绿：**194 枚钉子**（本版新增五枚：属性改名且旧名不许回来 / ForceSave + 置灰两条属性还在 /
+  setter 仍是归一 + 写运行时状态 + 打日志 / `LocaleTable` 两条 key 跟着 `nameof(StopPolicy)` 且旧 nameof 不许留 /
+  默认值仍只有一个来源）。
+- `node scripts/verify.cjs` → 版本四处一致 + T3 `pass=96 fail=0`（本版零纯逻辑改动，断言一条没动）。
+- `node scripts/verify.cjs --deployed` 全绿（dll 107520B / mjs 41833B / mod.json 0.14.2 / 两张图标）。
+- `releases/0.14.2/` 快照已生成（dll 107520B / mjs 41833B / mod.json / images）。
+- **发布已成功**：`NewVersion` 回话 `New mod version published` + `Access Control Level State: Private`；
+  `pull-live.js` 回读 `versionId=17 userVersion=0.14.2 size=61020`（created 2026-10-29T09:12:11Z）。
+- 本版 ChangeLog 982 字符（中英合计，远低于发布器 5000 上限）。
 
 **已验证（离线，2026-10-26 v0.14.1）**
 
@@ -343,8 +398,10 @@ MSYS_NO_PATHCONV=1 DOTNET_ROLL_FORWARD=Major dotnet "<游戏>\Cities2_Data\Conte
 - **v0.14.0 需求 2 总开关**：设置页关掉「启用模组」→ 左上角图标立刻消失；
   重启游戏后仍然是关的。分诊：模组日志 `[设置] 载入后 启用模组=False`，且 UI.log 出现
   `master off → 隐藏图标`。若后者不出现 ⇒ 前端没收到推送（C# 侧 JSON 里有 master=false）。
-- **v0.14.0 需求 3 下拉框**：选「保留公交站」→ 重启 → 仍是「保留公交站」；
-  设置目录里应出现 `BusLineAutoStops.coc`（老玩家的旧片段仍在 FallbackSettings.coc，值照读）。
+- **v0.14.2 下拉框**：升级后第一次进设置页，「退出懒人模式时」应当显示**「不保留公交站」**（老文件里那条旧键已失效）；
+  再改成「保留公交站」→ 重启 → 仍应是「保留公交站」（这一次是玩家真选过的，落在新键 `StopPolicy` 上）。
+  分诊：日志 `[选项] 退出懒人模式时 = …` 说明值进了设置对象，`[设置] 载入后 … 退出策略=…` 说明读回来的是什么；
+  新装玩家的片段应在自己的 `BusLineAutoStops.coc`，老玩家的旧片段仍在 `FallbackSettings.coc`（`[FileLocation]` 不搬旧片段，0.14.2 已核实）。
 - **v0.14.0 需求 4 右键连删**：修改既有线路 → 拖拽落站 → 右键删掉那一枚路径点 → 站台应一起消失，
   日志 `[右键撤点] 站台 … 的路径点已被删除`；退出懒人模式后再去删路径点 → 站台**不能**再被连删。
 - **v0.14.0 需求 5 零影响**：总开关关掉后帧数无可测变化；卸载模组后读档无报错。

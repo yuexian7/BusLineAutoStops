@@ -76,8 +76,10 @@ namespace BusLineAutoStops
             Put(map, setting.GetOptionGroupLocaleID(BusLineAutoStopsSetting.kGroupAbout), Get(d, en, "group.about"));
             Put(map, setting.GetOptionLabelLocaleID(nameof(BusLineAutoStopsSetting.AutoPlaceEnabled)), Get(d, en, "master.label"));
             Put(map, setting.GetOptionDescLocaleID(nameof(BusLineAutoStopsSetting.AutoPlaceEnabled)), Get(d, en, "master.desc"));
-            Put(map, setting.GetOptionLabelLocaleID(nameof(BusLineAutoStopsSetting.ExitPolicy)), Get(d, en, "policy.label"));
-            Put(map, setting.GetOptionDescLocaleID(nameof(BusLineAutoStopsSetting.ExitPolicy)), Get(d, en, "policy.desc"));
+            // v0.14.2：属性改名 StopPolicy（换落盘键名，见 Setting.cs 类注释第 3 条）——
+            // 这两条 key 是用 nameof 现算的，必须同步改，否则设置页这一条会没有标题和说明。
+            Put(map, setting.GetOptionLabelLocaleID(nameof(BusLineAutoStopsSetting.StopPolicy)), Get(d, en, "policy.label"));
+            Put(map, setting.GetOptionDescLocaleID(nameof(BusLineAutoStopsSetting.StopPolicy)), Get(d, en, "policy.desc"));
             // 需求 4（0.9.0）：有轨电车从懒人模式里剥出来单列一条，本版置灰不可选 + 注明暂未上线。
             Put(map, setting.GetOptionLabelLocaleID(nameof(BusLineAutoStopsSetting.TramEnabled)), Get(d, en, "tram.label"));
             Put(map, setting.GetOptionDescLocaleID(nameof(BusLineAutoStopsSetting.TramEnabled)), Get(d, en, "tram.desc"));
