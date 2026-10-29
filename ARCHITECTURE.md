@@ -2,7 +2,7 @@
 
 给下一个接手者的最小集：现行机制、硬不变量、构建命令、待办。
 逐版迭代史与机制取证（96 条校正、每版实机日志）在 `docs/history/开发笔记-v0.1.1~v0.11.1.md`（已冻结，只查不改）。
-当前版本状态：**v0.14.2 已本地部署、离线门禁全绿（194 条钉子 + 96 条 T3）、已上传线上（versionId=17，0.14.2，仍 Private）**：ModId 160528 / dll 107520B / mjs 41833B / 线上包 61020B。
+当前版本状态：**v0.14.2 已本地部署、离线门禁全绿（196 条钉子 + 96 条 T3）、已上传线上（versionId=17，0.14.2，仍 Private）**：ModId 160528 / dll 107520B / mjs 41833B / 线上包 61020B。
 0.14.2 只修一件事：「退出懒人模式时」下拉框每次重启都回到「保留公交站」；默认值按玩家要求定为「不保留」。
 根因是**落盘键名**（不是 UI、也不是 SetDefaults）：老文件里那句旧默认值跟玩家真选过的值长得一样，只有换键才失效 —— 见下"v0.14.2 本轮修订"，那条规律以后每次改默认值都要用。
 0.14.1 只改一条选项说明的措辞（12 语言），零代码行为改动；0.14.0 修玩家五条反馈：拖拽中要有预览、关总开关图标不消失、退出策略下拉框每次重启回默认、右键删路径点要连站台一起删、关掉后必须零影响。
@@ -30,7 +30,7 @@
 | 89 | **`Temp.m_Original == Entity.Null` 才是本模组造的幽灵**，`!= Null` 是原版的复制/选中副本（原件正被 `Hidden` 藏着）→ 判己防误删，删副本 = 玩家看到"站台消失" | 副本要等 `SubObjectHiddenSystem` 确认没有活 Temp 指回原件才解除隐藏 |
 | 90 | **落点定侧只由喂点的有符号横向偏移决定**（喂点用射线真实命中点，不用控制点位置） | `SnapRouteLane` 用 `dot(MathUtils.Right(切向), 喂点-曲线点)` 选车道，`SnapSegmentAreas` 再用它选可建造区；喂错点 = 落到对面人行道 |
 
-## v0.14.2 本轮修订（2026-10-29，一个下拉框 + 一条落盘规律）
+## v0.14.2 本轮修订（2026-10-29，一个下拉框 + 一条落盘规律 + 一条部署顺序）
 
 玩家原话："切换懒人模式的快捷键还是会被重置为保留（默认改成不保留吧），你再修复一下"。
 （玩家把设置页那一栏说成"快捷键"，指的就是「退出懒人模式时」那条下拉框；`ToggleLazyBinding` 本身一直是好的，
@@ -69,6 +69,13 @@
 （`AssetDatabase.CreateSettingsAsset`）；老玩家数据库里已有同名片段时，`LoadSettings` 直接复用那一份、
 `ApplyAndSave` 也跟着写回它原来所在的文件（`SaveSpecificSetting` → `GetTargetSetting` 按片段找 `fragment.source`）。
 所以老玩家的值仍住在 `FallbackSettings.coc` —— 0.14.0 那条注释里"从此写入落在自己的文件里"的说法**只对新装成立**，已改正。
+
+**同轮还修掉一个流程事故（部署 ≠ 生效）**：0.14.2 铺进 `Mods\` 时玩家的游戏还开着（15:30:01 启动、17:20:57 才
+`disposed`，那一局日志横幅是 `v0.14.1`），于是磁盘上是 0.14.2、内存里仍是 0.14.1，而报告里写了"本地已部署"。
+文件**没有**被锁（实测游戏运行时能正常写进去），问题纯粹是"写进去不生效"：换 DLL 必须重启进程，前端
+`mjs/mod.json` 却是 webview 从磁盘读的，可能被读成新版 → 前后端混版。修法是把规则钉进工具而不是靠人记：
+`deploy-local.js` 铺之前查 `Cities2.exe`，在跑就 `exit 1`（`--allow-running` 放行；`pack-release.js` 内部带这个开关，
+因为打包与游戏是否在跑无关），并补两枚钉子。实机顺序固定为：**退出游戏 → 部署 → 归档旧日志 → 从 Steam 启动**。
 
 ## v0.14.1 本轮修订（2026-10-26，纯文案）
 
@@ -276,12 +283,14 @@ Player.log 收尾是 `Native Crash Reporting / Got a UNKNOWN while executing nat
 
 ```powershell
 node scripts/compile-check.js        # 只做 C# 编译检查，不部署不跑 webpack
-node scripts/deploy-local.js         # Roslyn 直编 DLL → 铺完整产物到本机 Mods\BusLineAutoStops\
-node scripts/pack-release.js <版本>   # 打包 releases/<版本>/（DLL+mjs+mod.json+images）并自检，发布打包的事实标准（本版 194 枚钉子）
+node scripts/deploy-local.js         # Roslyn 直编 DLL → 铺完整产物到本机 Mods\BusLineAutoStops\（游戏在跑会拒绝）
+node scripts/pack-release.js <版本>   # 打包 releases/<版本>/（DLL+mjs+mod.json+images）并自检，发布打包的事实标准（本版 196 枚钉子）
 ```
 
 官方工具链 `dotnet build` 已修复可用（0 警告 0 错误；csproj 已补 `Colossal.UI.Binding` 引用、删死 Harmony 配置、`math.isfinite` 替代 net48 没有的 `float.IsFinite`），适合 IDE/编译校验；**发布打包仍以 `scripts/pack-release.js` 为准**。
 ⚠️ **但 `dotnet build` 会走官方 DeployWIP 重铺部署目录**：整个 `Mods\BusLineAutoStops\` 被清掉后只铺回 DLL+Burst 桩，deploy-local 铺的前端（mjs/mod.json/images）全没了 → 实机表现"左上角图标消失、面板选资产拦截失效"（2026-10-12 事故根因，后端仍活着，日志易误判）。**跑过 `dotnet build` 之后必须立刻 `node scripts/deploy-local.js` 重铺完整产物。**
+
+⚠️ **部署 ≠ 生效（v0.14.2 事故，2026-10-29）**：`deploy-local.js` 现在铺之前先查 `Cities2.exe`，游戏在跑就 `exit 1`（`--allow-running` 放行，`pack-release.js` 内部带着这个开关调它）。原因是**文件锁不是问题、生效才是**：实测游戏运行时能正常写进 `Mods\`，但正在跑的进程内存里仍是启动时载入的旧程序集——那一局把 0.14.2 铺进去，日志横幅仍是 `v0.14.1`、设置行仍是 `退出策略=KeepStops`，白等一轮；而 mjs/mod.json 是 webview 从磁盘读的，可能被读成新版 → 前后端混版，实机日志最难判。实机顺序固定为：**退出游戏 → `deploy-local` → 归档旧日志（`Logs\BusLineAutoStops.log` 加时间戳改名）→ 从 Steam 启动**。
 
 离线门禁：
 
@@ -322,10 +331,10 @@ MSYS_NO_PATHCONV=1 DOTNET_ROLL_FORWARD=Major dotnet "<游戏>\Cities2_Data\Conte
 |------|------|
 | `build-frontend.js` | webpack 打包前端 dist（npm-cli 直调，绕开带空格的 npm.cmd） |
 | `compile-check.js` | 只做 C# 编译检查（引用表与 deploy-local 一致） |
-| `deploy-local.js` | Roslyn 直编 + 部署到本机 `Mods\BusLineAutoStops\`（默认强制重跑 webpack） |
+| `deploy-local.js` | Roslyn 直编 + 部署到本机 `Mods\BusLineAutoStops\`（默认强制重跑 webpack；游戏在跑默认拒绝，`--allow-running` 放行） |
 | `dotnet-sdk.js` | **v0.11.2 新增**：解析本机最新 8.x SDK 的 `csc.dll` 与 `NETCore.App.Ref` 引用目录（三条构建链共用，别再写死版本号） |
 | `paths.js` | **v0.11.2 新增**：游戏目录 / 部署目录 / 部署白名单四项的唯一真值（deploy-local 与 verify --deployed 读同一处） |
-| `pack-release.js` | 打包 `releases/<版本>/` 并做版本/需求/安全自检（194 枚钉子，防发旧产物与死分支） |
+| `pack-release.js` | 打包 `releases/<版本>/` 并做版本/需求/安全自检（196 枚钉子，防发旧产物与死分支） |
 | `pull-live.js` | 只读核对 Paradox 线上版本表（写 `research/live-versions.json`） |
 | `set-store-copy.js` | 写 `PublishConfiguration.xml` 面向玩家的 4 个字段 + `Frontend/mod.json` |
 | `verify.cjs` | 离线门禁：版本四处一致 + T3 +（`--deployed`）部署完整性 |
@@ -335,9 +344,9 @@ MSYS_NO_PATHCONV=1 DOTNET_ROLL_FORWARD=Major dotnet "<游戏>\Cities2_Data\Conte
 **已验证（离线，2026-10-29 v0.14.2）**
 
 - `node scripts/compile-check.js` 0 错误（13 源文件 → 107520B；与 0.14.1 同尺寸 —— `ExitPolicy` 与 `StopPolicy` 恰好同长 10 字符）。
-- `node scripts/pack-release.js 0.14.2` 全绿：**194 枚钉子**（本版新增五枚：属性改名且旧名不许回来 / ForceSave + 置灰两条属性还在 /
+- `node scripts/pack-release.js 0.14.2` 全绿：**196 枚钉子**（本版新增五枚：属性改名且旧名不许回来 / ForceSave + 置灰两条属性还在 /
   setter 仍是归一 + 写运行时状态 + 打日志 / `LocaleTable` 两条 key 跟着 `nameof(StopPolicy)` 且旧 nameof 不许留 /
-  默认值仍只有一个来源）。
+  默认值仍只有一个来源；另加两枚**部署钉子**：`deploy-local` 游戏在跑就 `exit 1`、`pack-release` 调它时带 `--allow-running`）。
 - `node scripts/verify.cjs` → 版本四处一致 + T3 `pass=96 fail=0`（本版零纯逻辑改动，断言一条没动）。
 - `node scripts/verify.cjs --deployed` 全绿（dll 107520B / mjs 41833B / mod.json 0.14.2 / 两张图标）。
 - `releases/0.14.2/` 快照已生成（dll 107520B / mjs 41833B / mod.json / images）。

@@ -34,7 +34,9 @@ if (xmlArg !== version) {
 }
 
 // 1) 先跑完整构建（deploy-local.js 里含 Roslyn 直编 + webpack + 写 Mods/）
-execFileSync(process.execPath, [path.join(root, "scripts", "deploy-local.js")], {
+// --allow-running：deploy-local 默认拒绝在游戏运行时铺目录（那一局不会生效，见其文件头），
+// 但打包产物跟游戏是否在跑无关，不该因此断掉发布流程。
+execFileSync(process.execPath, [path.join(root, "scripts", "deploy-local.js"), "--allow-running"], {
   cwd: root,
   encoding: "utf8",
   stdio: "inherit",
@@ -1053,6 +1055,20 @@ const modCs = fs.readFileSync(path.join(root, "BusLineAutoStopsMod.cs"), "utf8")
   push("v0.14.2：默认值仍只有一个来源（不保留），换键名没有顺手改语义",
     rules142.includes("return ExitDeletePolicy.DeleteSessionStops;")
     && set142.includes("private ExitDeletePolicy m_ExitPolicy = TransportKindRules.DefaultExitPolicy();"), "");
+}
+
+{
+  // —— 部署时序（2026-10-29 事故）：游戏在跑时铺进 Mods\ 只换了磁盘，那一局内存里仍是启动时
+  // 载入的旧程序集 —— 表现是「日志横幅还是上一版」「设置行还是旧值」，实机一轮白跑；
+  // 而前端 mjs 是 webview 从磁盘读的，可能被读成新版 → 前后端混版。锁不锁文件不是重点。
+  const deploySrc = fs.readFileSync(path.join(root, "scripts", "deploy-local.js"), "utf8");
+  push("部署钉子：deploy-local 铺之前查 Cities2.exe，在跑就 exit 1（--allow-running 才放行）",
+    deploySrc.includes('"IMAGENAME eq Cities2.exe"')
+    && /if \(running === true\)[\s\S]{0,900}?process\.exit\(1\)/.test(deploySrc)
+    && deploySrc.includes('process.argv.includes("--allow-running")'), "");
+  push("部署钉子：pack-release 调 deploy-local 带 --allow-running（打包与游戏是否在跑无关，不该断发布）",
+    fs.readFileSync(path.join(root, "scripts", "pack-release.js"), "utf8")
+      .includes('"deploy-local.js"), "--allow-running"'), "");
 }
 
 {

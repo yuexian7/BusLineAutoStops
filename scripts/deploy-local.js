@@ -1,10 +1,50 @@
 /**
  * 本地部署：Roslyn 直编 BusLineAutoStops.dll → 复制 0Harmony 2.3.3 → 写入 Mods\BusLineAutoStops\。
  * 目标目录 = CSII_LOCALMODSPATH（与 F:\\...\\Cities Skylines II\\Cities Skylines II\\Mods 为同一 junction）。
+ *
+ * v0.14.2：铺之前先查 Cities2.exe，游戏在跑就拒绝（--allow-running 才放行）。
+ * 理由不是文件锁（实测能写进去），是「写进去了也不生效」：DLL 换到磁盘上，正在跑的进程
+ * 内存里仍是启动时载入的旧程序集，本局日志横幅还是旧版本；而 mjs/mod.json 是 webview
+ * 从磁盘读的，可能被读成新版 → 前后端混版。2026-10-29 就这样铺完 0.14.2 而那一局跑的是
+ * 0.14.1，白等一轮。实机验证的正确顺序：退出游戏 → 部署 → 归档旧日志 → 从 Steam 启动。
  */
 const { execFileSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+
+// 游戏在跑就别铺（见文件头 v0.14.2 说明）。返回 true/false，查不到返回 null（不拦）。
+function gameRunning() {
+  try {
+    const out = execFileSync(
+      "tasklist",
+      ["/FI", "IMAGENAME eq Cities2.exe", "/FO", "CSV", "/NH"],
+      { encoding: "utf8", stdio: "pipe" }
+    );
+    return /"Cities2\.exe"/i.test(out);
+  } catch (e) {
+    return null;
+  }
+}
+if (!process.argv.includes("--allow-running")) {
+  const running = gameRunning();
+  if (running === true) {
+    console.error(
+      [
+        "",
+        "!!! Cities2.exe 正在运行：现在铺进 Mods\\ 这一局不会生效 !!!",
+        "  · DLL 到磁盘了，但游戏内存里仍是启动时载入的旧程序集 —— 本局日志横幅还是旧版本，测了白测。",
+        "  · 前端 mjs/mod.json 由 webview 从磁盘读，可能被读成新版 → 前后端混版，最难查的那种。",
+        "  正确顺序：退出游戏 → node scripts/deploy-local.js → 归档旧日志 → 从 Steam 启动。",
+        "  确实只想重铺产物（打包 / 编译校验）：加 --allow-running",
+        "",
+      ].join("\n")
+    );
+    process.exit(1);
+  }
+  if (running === null) {
+    console.warn("查不到 Cities2.exe 进程状态（tasklist 不可用）—— 跳过「游戏是否在跑」检查");
+  }
+}
 
 const root = path.join(__dirname, "..");
 // SDK 路径不写死版本号（v0.11.2 审查 P2-6），与 compile-check.js 同一个解析器；

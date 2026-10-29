@@ -25,11 +25,13 @@
 ## 构建与本地部署
 
 ```powershell
-# 推荐（本机 NuGet 异常时也能用，Roslyn 直编）
+# 推荐（本机 NuGet 异常时也能用，Roslyn 直编）；先退出游戏，游戏在跑时脚本会拒绝部署
 node scripts/build-frontend.js
 node scripts/deploy-local.js
 # → F:\SteamLibrary\steamapps\common\Cities Skylines II\Cities Skylines II\Mods\BusLineAutoStops\
 ```
+
+部署到 `Mods\BusLineAutoStops\` 只代表磁盘上是新版，**游戏必须重启进程才会载入**（内存里一直是启动时那份程序集）。所以实机验证的顺序固定为：退出游戏 → 部署 → 归档旧日志 → 从 Steam 启动。`deploy-local.js` 会查 `Cities2.exe`，在跑就 `exit 1`（只重铺产物/打包时用 `--allow-running`）。
 
 官方工具链 `dotnet build` 已修复可用（0 警告 0 错误），适合 IDE 打开与编译校验；**但它会重铺部署目录、清掉前端产物，跑完必须再执行 `node scripts/deploy-local.js`**。发布打包仍以 `scripts/pack-release.js` 为准。构建命令、版本五处统一表与现役脚本清单见 `ARCHITECTURE.md`。
 
