@@ -2,7 +2,7 @@
 
 给下一个接手者的最小集：现行机制、硬不变量、构建命令、待办。
 逐版迭代史与机制取证（96 条校正、每版实机日志）在 `docs/history/开发笔记-v0.1.1~v0.11.1.md`（已冻结，只查不改）。
-当前版本状态：**v0.14.2 已本地部署、离线门禁全绿（196 条钉子 + 96 条 T3）、已上传线上（versionId=17，0.14.2，仍 Private）**：ModId 160528 / dll 107520B / mjs 41833B / 线上包 61020B。
+当前版本状态：**v0.14.2，线上 = 2026-10-30 重新首发的新模组：ModId 165510 / versionId=1 / 0.14.2 / 线上包 61022B / Private**（旧 ModId 160528 已被作者删除，versionId=1..17 随之消失）；本地 dll 107520B / mjs 41833B，离线门禁 196 钉子 + 96 T3 全绿。
 0.14.2 只修一件事：「退出懒人模式时」下拉框每次重启都回到「保留公交站」；默认值按玩家要求定为「不保留」。
 根因是**落盘键名**（不是 UI、也不是 SetDefaults）：老文件里那句旧默认值跟玩家真选过的值长得一样，只有换键才失效 —— 见下"v0.14.2 本轮修订"，那条规律以后每次改默认值都要用。
 0.14.1 只改一条选项说明的措辞（12 语言），零代码行为改动；0.14.0 修玩家五条反馈：拖拽中要有预览、关总开关图标不消失、退出策略下拉框每次重启回默认、右键删路径点要连站台一起删、关掉后必须零影响。
@@ -76,6 +76,16 @@
 `mjs/mod.json` 却是 webview 从磁盘读的，可能被读成新版 → 前后端混版。修法是把规则钉进工具而不是靠人记：
 `deploy-local.js` 铺之前查 `Cities2.exe`，在跑就 `exit 1`（`--allow-running` 放行；`pack-release.js` 内部带这个开关，
 因为打包与游戏是否在跑无关），并补两枚钉子。实机顺序固定为：**退出游戏 → 部署 → 归档旧日志 → 从 Steam 启动**。
+
+**同轮线上事件（2026-10-30，删旧发新）**：作者嫌更新日志太啰嗦，在网页端把旧模组整个删了（ModId 160528，
+versionId=1..17 全部随之消失），要求用同一发布物重新首发。执行：`Publish` 首发要求 XML 里 `ModId=0`
+（发布器原话："ModId must be not set or be equal to 0 (zero) in configuration to publish a new mod"），
+发布成功回话 `Mod published with Id=165510`；`pull-live.js` 回读 `versionId=1 userVersion=0.14.2 size=61022
+created=2026-10-30T05:06:09Z`，Private。内容用的是 `releases/0.14.2/` 快照（与上一版发布物同字节，未重编）。
+文案按作者要求重写（`set-store-copy.js`）：描述精简到 3+3 段、去掉逐条罗列；更新日志只留一条
+「v0.14.2 Fixed shortcut settings. / 修复快捷键设置。」；标题与四条链接不动。引用回填：`PublishConfiguration.xml`、
+`pull-live.js`（MOD_ID + 网页注释）、`README.md`、本文；`set-store-copy.js` 的 KEEP 里 ModId 改为从 XML 现读不写死。
+`docs/history/` 里的 160528 是冻结档案，不动。
 
 ## v0.14.1 本轮修订（2026-10-26，纯文案）
 
@@ -323,7 +333,7 @@ node scripts/verify.cjs --deployed   # 部署完整性
 MSYS_NO_PATHCONV=1 DOTNET_ROLL_FORWARD=Major dotnet "<游戏>\Cities2_Data\Content/Game/.ModdingToolchain/ModPublisher/ModPublisher.dll" NewVersion Properties/PublishConfiguration.xml --contentFolder releases/0.13.0 --verbose
 ```
 
-`PublishConfiguration.xml` 是**线上商店页的镜像**，NewVersion 会无条件重推全部元数据：`ModId 160528`、`DisplayName`、`AccessLevel=Private`、`Tag`、`GameVersion`、`Thumbnail`、论坛 + github + x + kofi 四条链接都不许被本地手改带歪（`set-store-copy.js` 里有 `KEEP` 断言）。
+`PublishConfiguration.xml` 是**线上商店页的镜像**，NewVersion 会无条件重推全部元数据：`ModId 165510`（2026-10-30 起；旧 160528 已删）、`DisplayName`、`AccessLevel=Private`、`Tag`、`GameVersion`、`Thumbnail`、论坛 + github + x + kofi 四条链接都不许被本地手改带歪（`set-store-copy.js` 里有 `KEEP` 断言，ModId 值从 XML 现读、不写死）。
 
 ## 现役脚本清单（scripts/，别删）
 

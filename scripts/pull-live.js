@@ -3,7 +3,7 @@
  * 线上状态核对（只读，不发任何写请求）。
  *
  * 为什么只能核对"版本列表"：模组是 PRIVATE，元数据（描述 / 链接 / Tag / 缩略图 / AccessLevel）
- * 只有网页 `mods.paradoxplaza.com/mods/160528/windows` 读得到。API 侧
+ * 只有网页 `mods.paradoxplaza.com/mods/165510/windows` 读得到。API 侧
  * `mods?modId=`、`mods/uploaded` 用游戏 `.pdxsdk` 里的 SessionToken 是 403，
  * `mods/versions?modId=` 就算加 `includeMetadata=true` 也不返回元数据（都是实测，见开发笔记的发布记录）。
  * 所以：
@@ -15,7 +15,8 @@
 const fs = require("fs");
 const path = require("path");
 
-const MOD_ID = "160528";
+// 2026-10-30：作者删除旧模组（160528）重新首发，新 ID = 165510（发布器输出 "Mod published with Id=165510"）。
+const MOD_ID = "165510";
 const PDXSDK =
   "C:\\Users\\10975\\AppData\\LocalLow\\Colossal Order\\Cities Skylines II\\.pdxsdk";
 

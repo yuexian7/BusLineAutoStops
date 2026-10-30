@@ -2,7 +2,7 @@
 
 画公交线路时自动配上站台资产的都市天际线2 模组：路径点停住 0.18 秒出站台预览，左键点击才落地，线路的停靠点自动依附到站台。
 
-- **Paradox Mods**: ModId **160528**（Private，当前线上 0.14.2）
+- **Paradox Mods**: ModId **165510**（Private，当前线上 0.14.2；旧 ModId 160528 已于 2026-10-30 删除重发）
 - **GitHub**: https://github.com/yuexian7/BusLineAutoStops
 
 ## 功能（v0.14.2）
